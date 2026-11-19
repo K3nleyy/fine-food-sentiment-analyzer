@@ -1,20 +1,24 @@
-import os
 import io
 import unittest
 from fastapi.testclient import TestClient
 from backend.main import app
+from backend.dataset_store import dataset_store
 
 class TestSentimentAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
 
+    def setUp(self):
+        # Reset dataset before each test
+        dataset_store.clear()
+
     def test_01_root(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertIn("project", data)
-        self.assertIn("endpoints", data)
+        self.assertIn("platform", data)
+        self.assertEqual(data["platform"], "Fine-Food Insights")
 
     def test_02_health(self):
         response = self.client.get("/health")
@@ -23,101 +27,151 @@ class TestSentimentAPI(unittest.TestCase):
         self.assertEqual(data["status"], "healthy")
         self.assertTrue(data["model_loaded"])
         self.assertEqual(data["classes"], ["Negative", "Neutral", "Positive"])
-        self.assertGreater(data["vocabulary_size"], 1000)
 
-    def test_03_predict_positive(self):
-        payload = {"text": "The dark chocolate almonds were fresh, crunchy, and absolutely delicious! Best purchase ever."}
-        response = self.client.post("/predict", json=payload)
+    def test_03_dataset_summary_empty(self):
+        response = self.client.get("/api/dataset/summary")
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["sentiment"], "Positive")
-        self.assertGreater(data["confidence"], 0.70)
-        self.assertGreater(data["probabilities"]["Positive"], data["probabilities"]["Negative"])
+        self.assertFalse(data["has_data"])
+        self.assertEqual(data["total_reviews"], 0)
+        self.assertEqual(data["sentiment_distribution"]["Positive"], 0)
 
-    def test_04_predict_negative(self):
-        payload = {"text": "Terrible experience. The bag was torn open, stale chips, and awful taste. Worst ever."}
-        response = self.client.post("/predict", json=payload)
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["sentiment"], "Negative")
-        self.assertGreater(data["confidence"], 0.70)
-        self.assertGreater(data["probabilities"]["Negative"], data["probabilities"]["Positive"])
-
-    def test_05_predict_neutral(self):
-        payload = {"text": "The flavor is okay, not bad but nothing special. Average tea."}
-        response = self.client.post("/predict", json=payload)
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["sentiment"], "Neutral")
-
-    def test_06_predict_empty_error(self):
-        payload = {"text": "   "}
-        response = self.client.post("/predict", json=payload)
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("cannot be empty", response.json()["detail"])
-
-    def test_07_predict_batch(self):
+    def test_04_submit_review_manual(self):
         payload = {
-            "reviews": [
-                "Loved this delicious treat!",
-                "Completely awful and disgusting, threw it in the trash.",
-                "It was average and okay, not great."
-            ]
+            "text": "The dark chocolate almonds were fresh, crunchy, and absolutely delicious!",
+            "rating": 5,
+            "customer_name": "Sarah Connor",
+            "product_name": "Dark Chocolate Almonds"
         }
-        response = self.client.post("/predict-batch", json=payload)
+        response = self.client.post("/api/reviews", json=payload)
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["total_reviews"], 3)
-        self.assertEqual(data["sentiment_distribution"]["Positive"], 1)
-        self.assertEqual(data["sentiment_distribution"]["Negative"], 1)
-        self.assertEqual(data["sentiment_distribution"]["Neutral"], 1)
+        
+        # Verify review item
+        review = data["review"]
+        self.assertEqual(review["predicted_sentiment"], "Positive")
+        self.assertEqual(review["rating"], 5)
+        self.assertEqual(review["customer_name"], "Sarah Connor")
+        self.assertEqual(review["product_name"], "Dark Chocolate Almonds")
+        self.assertGreater(review["confidence"], 0.70)
 
-    def test_08_upload_csv(self):
-        csv_content = (
-            'Id,ProductId,Text\n'
-            '1,B001,"Absolutely loved this product! Fantastic flavor."\n'
-            '2,B002,"Terrible quality. Arrived broken and stale."\n'
-            '3,B003,"It is alright, nothing special but drinkable."\n'
-            '4,B004,"Super yummy snack, will definitely order again."\n'
-        )
-        files = {
-            "file": ("test_reviews.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")
+        # Verify summary auto-updated
+        summary = data["summary"]
+        self.assertTrue(summary["has_data"])
+        self.assertEqual(summary["total_reviews"], 1)
+        self.assertEqual(summary["sentiment_distribution"]["Positive"], 1)
+        self.assertEqual(summary["sentiment_percentages"]["Positive"], 100.0)
+
+    def test_05_submit_negative_review_rating_stored_separately(self):
+        payload = {
+            "text": "Terrible taste, arrived completely stale and bag was torn open. Horrible!",
+            "rating": 1,
+            "customer_name": "John Doe",
+            "product_name": "Potato Chips"
         }
-        response = self.client.post("/upload-csv", files=files)
+        response = self.client.post("/api/reviews", json=payload)
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["total_reviews"], 4)
-        self.assertEqual(data["text_column_detected"], "Text")
-        self.assertEqual(data["sentiment_distribution"]["Positive"], 2)
-        self.assertEqual(data["sentiment_distribution"]["Negative"], 1)
-        self.assertEqual(data["sentiment_distribution"]["Neutral"], 1)
-        self.assertEqual(len(data["results_sample"]), 4)
+        review = data["review"]
+        
+        # Model predicted sentiment is Negative
+        self.assertEqual(review["predicted_sentiment"], "Negative")
+        # Rating is stored distinctly as integer 1
+        self.assertEqual(review["rating"], 1)
 
-    def test_09_upload_invalid_file_extension(self):
-        files = {
-            "file": ("image.png", io.BytesIO(b"fake-image-bytes"), "image/png")
-        }
-        response = self.client.post("/upload-csv", files=files)
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("Invalid file format", response.json()["detail"])
+    def test_06_list_reviews_pagination_and_search(self):
+        # Add 3 reviews
+        self.client.post("/api/reviews", json={"text": "Fresh roasted coffee beans with wonderful aroma.", "rating": 5, "product_name": "Coffee"})
+        self.client.post("/api/reviews", json={"text": "Stale chips, arrived crushed.", "rating": 1, "product_name": "Chips"})
+        self.client.post("/api/reviews", json={"text": "Decent tea, average flavor.", "rating": 3, "product_name": "Tea"})
 
-    def test_10_export_csv(self):
-        csv_content = (
-            "Id,Text\n"
-            "1,Delicious coffee.\n"
-            "2,Bad taste.\n"
+        # Test listing
+        res = self.client.get("/api/reviews?page=1&limit=10")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(len(data["items"]), 3)
+
+        # Test search filter
+        search_res = self.client.get("/api/reviews?search=coffee")
+        self.assertEqual(search_res.status_code, 200)
+        search_data = search_res.json()
+        self.assertEqual(search_data["total"], 1)
+        self.assertIn("coffee", search_data["items"][0]["text"].lower())
+
+        # Test sentiment filter
+        neg_res = self.client.get("/api/reviews?sentiment=Negative")
+        self.assertEqual(neg_res.status_code, 200)
+        neg_data = neg_res.json()
+        self.assertEqual(neg_data["total"], 1)
+        self.assertEqual(neg_data["items"][0]["predicted_sentiment"], "Negative")
+
+    def test_07_upload_csv_replace_and_append_modes(self):
+        csv_content_1 = (
+            'Id,Score,Text\n'
+            '1,5,"Delicious cookies, my whole family loved them!"\n'
+            '2,1,"Disgusting and stale. Never purchasing again."\n'
         )
         files = {
-            "file": ("export_test.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")
+            "file": ("batch1.csv", io.BytesIO(csv_content_1.encode("utf-8")), "text/csv")
         }
-        response = self.client.post("/export-csv", files=files)
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("text/csv", response.headers["content-type"])
-        content_text = response.text
-        self.assertIn("Predicted_Sentiment", content_text)
-        self.assertIn("Confidence", content_text)
-        self.assertIn("Positive", content_text)
-        self.assertIn("Negative", content_text)
+        # Upload with replace
+        res1 = self.client.post("/api/upload-csv", files=files, data={"mode": "replace"})
+        self.assertEqual(res1.status_code, 200)
+        data1 = res1.json()
+        self.assertEqual(data1["total_reviews"], 2)
+        self.assertEqual(data1["summary"]["total_reviews"], 2)
+
+        # Upload second file with append
+        csv_content_2 = (
+            'Id,Score,Text\n'
+            '3,3,"Average flavor, not bad but nothing exceptional."\n'
+        )
+        files2 = {
+            "file": ("batch2.csv", io.BytesIO(csv_content_2.encode("utf-8")), "text/csv")
+        }
+        res2 = self.client.post("/api/upload-csv", files=files2, data={"mode": "append"})
+        self.assertEqual(res2.status_code, 200)
+        data2 = res2.json()
+        self.assertEqual(data2["summary"]["total_reviews"], 3)
+        self.assertEqual(data2["summary"]["sentiment_distribution"]["Positive"], 1)
+        self.assertEqual(data2["summary"]["sentiment_distribution"]["Negative"], 1)
+        self.assertEqual(data2["summary"]["sentiment_distribution"]["Neutral"], 1)
+
+    def test_08_load_sample_dataset_and_clear(self):
+        # Load sample
+        res_sample = self.client.post("/api/dataset/sample")
+        self.assertEqual(res_sample.status_code, 200)
+        summary = res_sample.json()
+        self.assertTrue(summary["has_data"])
+        self.assertEqual(summary["total_reviews"], 25)
+        self.assertGreater(summary["sentiment_distribution"]["Positive"], 0)
+        self.assertGreater(summary["sentiment_distribution"]["Negative"], 0)
+        self.assertGreater(summary["sentiment_distribution"]["Neutral"], 0)
+        self.assertGreater(len(summary["positive_themes"]), 0)
+        self.assertGreater(len(summary["negative_themes"]), 0)
+
+        # Clear dataset
+        res_clear = self.client.post("/api/dataset/clear")
+        self.assertEqual(res_clear.status_code, 200)
+        cleared_summary = res_clear.json()
+        self.assertFalse(cleared_summary["has_data"])
+        self.assertEqual(cleared_summary["total_reviews"], 0)
+
+    def test_09_export_dataset(self):
+        # Add a review and export
+        self.client.post("/api/reviews", json={"text": "Terrific coffee beans!", "rating": 5})
+        res = self.client.get("/api/dataset/export")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("text/csv", res.headers["content-type"])
+        content = res.text
+        self.assertIn("Terrific coffee beans!", content)
+        self.assertIn("predicted_sentiment", content)
+
+    def test_10_stateless_predict(self):
+        res = self.client.post("/predict", json={"text": "Fresh and crunchy!"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["sentiment"], "Positive")
 
 if __name__ == "__main__":
     unittest.main()

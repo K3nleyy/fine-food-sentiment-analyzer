@@ -1,24 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Sparkles, 
-  UploadCloud, 
-  FileText, 
-  CheckCircle2, 
-  AlertCircle, 
-  TrendingUp, 
-  BarChart3, 
-  RefreshCw, 
+  Plus, 
+  Upload, 
   Download, 
-  ArrowRight,
-  ShieldCheck,
-  Search,
+  Search, 
+  Star, 
+  TrendingUp, 
+  AlertCircle, 
+  CheckCircle2, 
+  X, 
+  MessageSquare, 
+  RefreshCw,
+  Sparkles,
+  Inbox,
+  ArrowUpDown,
   Filter,
-  BrainCircuit,
-  PieChart,
-  HelpCircle,
-  ThumbsUp,
-  ThumbsDown,
-  Minus
+  Layers,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
@@ -26,1133 +25,1193 @@ const API_BASE = window.location.hostname === 'localhost' || window.location.hos
   : '/api';
 
 export default function App() {
-  const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'offline' | 'checking'
-  const [activeTab, setActiveTab] = useState('playground'); // 'playground' | 'csv' | 'methodology'
-
-  // Global aggregate metrics (starts with chronological test set benchmark or dynamic updates)
-  const [metrics, setMetrics] = useState({
-    total: 78716,
-    positive: 60016,
-    neutral: 6245,
-    negative: 12455,
-    source: 'Test Benchmark (78,716 reviews)'
+  // Main dataset summary state
+  const [summary, setSummary] = useState({
+    has_data: false,
+    total_reviews: 0,
+    sentiment_distribution: { Positive: 0, Neutral: 0, Negative: 0 },
+    sentiment_percentages: { Positive: 0.0, Neutral: 0.0, Negative: 0.0 },
+    rating_distribution: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, unrated: 0 },
+    timeline: [],
+    positive_themes: [],
+    negative_themes: [],
+    last_updated: null
   });
 
-  // Single review prediction state
-  const [reviewText, setReviewText] = useState('');
-  const [isPredicting, setIsPredicting] = useState(false);
-  const [predictionResult, setPredictionResult] = useState(null);
-  const [predictionError, setPredictionError] = useState(null);
-  const [sessionHistory, setSessionHistory] = useState([]);
+  const [isLoadingSummary, setIsLoadingSummary] = useState(true);
 
-  // CSV upload state
-  const [csvFile, setCsvFile] = useState(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [csvResponse, setCsvResponse] = useState(null);
-  const [csvError, setCsvError] = useState(null);
-  const [tableSearch, setTableSearch] = useState('');
+  // Reviews list table state
+  const [reviewsData, setReviewsData] = useState({ total: 0, page: 1, pages: 1, items: [] });
+  const [searchQuery, setSearchQuery] = useState('');
   const [sentimentFilter, setSentimentFilter] = useState('ALL');
-  const [tablePage, setTablePage] = useState(1);
+  const [ratingFilter, setRatingFilter] = useState('ALL');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [isLoadingReviews, setIsLoadingReviews] = useState(false);
+
+  // Modals state
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+
+  // Add review form state
+  const [newReviewText, setNewReviewText] = useState('');
+  const [newRating, setNewRating] = useState(0); // 0 = unrated, 1-5
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [newProductName, setNewProductName] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [addReviewError, setAddReviewError] = useState(null);
+
+  // Upload CSV state
+  const [csvFile, setCsvFile] = useState(null);
+  const [uploadMode, setUploadMode] = useState('replace'); // 'replace' | 'append'
+  const [isUploadingCsv, setIsUploadingCsv] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
   const fileInputRef = useRef(null);
 
-  // Check backend health on mount
+  // Notification toast
+  const [toastMessage, setToastMessage] = useState(null);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // Fetch summary and reviews on mount
   useEffect(() => {
-    checkHealth();
-    const interval = setInterval(checkHealth, 15000);
-    return () => clearInterval(interval);
+    fetchSummary();
   }, []);
 
-  const checkHealth = async () => {
+  useEffect(() => {
+    fetchReviews(currentPage, searchQuery, sentimentFilter, ratingFilter);
+  }, [currentPage, searchQuery, sentimentFilter, ratingFilter]);
+
+  // Fetch summary analytics
+  const fetchSummary = async () => {
+    setIsLoadingSummary(true);
     try {
-      const res = await fetch(`${API_BASE}/health`);
+      const res = await fetch(`${API_BASE}/api/dataset/summary`);
       if (res.ok) {
-        setBackendStatus('connected');
-      } else {
-        setBackendStatus('offline');
+        const data = await res.json();
+        setSummary(data);
       }
-    } catch {
-      setBackendStatus('offline');
+    } catch (err) {
+      console.error('Failed to fetch dataset summary:', err);
+    } finally {
+      setIsLoadingSummary(false);
     }
   };
 
-  // Handle single review prediction
-  const handlePredict = async (textToPredict = null) => {
-    const text = (textToPredict || reviewText).trim();
+  // Fetch reviews table
+  const fetchReviews = async (page = 1, search = '', sentiment = 'ALL', rating = 'ALL') => {
+    setIsLoadingReviews(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: '15',
+        search: search.trim(),
+        sentiment,
+        rating
+      });
+      const res = await fetch(`${API_BASE}/api/reviews?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setReviewsData(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch reviews:', err);
+    } finally {
+      setIsLoadingReviews(false);
+    }
+  };
+
+  // Submit new review
+  const handleAddReviewSubmit = async (e) => {
+    e.preventDefault();
+    const text = newReviewText.trim();
     if (!text) {
-      setPredictionError('Please enter a review before analyzing.');
+      setAddReviewError('Review text is required.');
       return;
     }
 
-    setIsPredicting(true);
-    setPredictionError(null);
+    setIsSubmittingReview(true);
+    setAddReviewError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/predict`, {
+      const payload = {
+        text,
+        rating: newRating > 0 ? newRating : null,
+        customer_name: newCustomerName.trim() || null,
+        product_name: newProductName.trim() || null
+      };
+
+      const res = await fetch(`${API_BASE}/api/reviews`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
+        body: JSON.stringify(payload)
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Prediction failed');
+        const errData = await res.json();
+        throw new Error(errData.detail || 'Failed to submit review');
       }
 
-      const data = await res.json();
-      setPredictionResult(data);
+      const resData = await res.json();
+      
+      // Automatic dashboard update with backend confirmed data
+      setSummary(resData.summary);
+      
+      // Refresh reviews list
+      fetchReviews(1, searchQuery, sentimentFilter, ratingFilter);
+      setCurrentPage(1);
 
-      // Add to session history
-      const historyItem = {
-        id: Date.now(),
-        text: data.text,
-        sentiment: data.sentiment,
-        confidence: data.confidence,
-        timestamp: new Date().toLocaleTimeString()
-      };
-      setSessionHistory(prev => [historyItem, ...prev.slice(0, 9)]);
+      // Reset form & close modal
+      setNewReviewText('');
+      setNewRating(0);
+      setNewCustomerName('');
+      setNewProductName('');
+      setIsAddModalOpen(false);
 
-      // Update global metrics count
-      setMetrics(prev => {
-        const key = data.sentiment.toLowerCase();
-        return {
-          ...prev,
-          total: prev.total + 1,
-          [key]: prev[key] + 1,
-          source: 'Live Session Aggregates'
-        };
-      });
+      showToast(`Review added • Analyzed as ${resData.review.predicted_sentiment} (${(resData.review.confidence * 100).toFixed(0)}% confidence)`);
 
     } catch (err) {
-      setPredictionError(err.message || 'Failed to connect to prediction backend.');
+      setAddReviewError(err.message || 'An error occurred while saving the review.');
     } finally {
-      setIsPredicting(false);
+      setIsSubmittingReview(false);
     }
   };
 
-  // Preset example chips
-  const examples = [
-    {
-      label: 'Fresh & Delicious',
-      type: 'Positive',
-      text: 'The dark chocolate almonds arrived fresh, crunchy, and absolutely delicious! Best purchase ever.'
-    },
-    {
-      label: 'Stale & Damaged',
-      type: 'Negative',
-      text: 'Terrible experience. The bag was torn open, contents spilled, and the chips tasted stale and awful.'
-    },
-    {
-      label: 'Average & Mild',
-      type: 'Neutral',
-      text: 'The flavor is okay, not bad but nothing exceptional. A bit too sweet for my personal taste.'
-    },
-    {
-      label: 'Negation Handling',
-      type: 'Negative',
-      text: 'Not good at all. I would not buy this again and do not recommend it.'
-    }
-  ];
-
-  // Handle CSV file selection
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setCsvFile(e.target.files[0]);
-      setCsvError(null);
-    }
-  };
-
-  // Upload CSV
-  const handleUploadCsv = async () => {
+  // Upload CSV dataset
+  const handleCsvUploadSubmit = async () => {
     if (!csvFile) {
-      setCsvError('Please select a CSV file first.');
+      setUploadError('Please select a CSV file.');
       return;
     }
 
-    setIsUploading(true);
-    setCsvError(null);
+    setIsUploadingCsv(true);
+    setUploadError(null);
 
     const formData = new FormData();
     formData.append('file', csvFile);
+    formData.append('mode', uploadMode);
 
     try {
-      const res = await fetch(`${API_BASE}/upload-csv`, {
+      const res = await fetch(`${API_BASE}/api/upload-csv`, {
         method: 'POST',
         body: formData
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'CSV upload failed');
+        const errData = await res.json();
+        throw new Error(errData.detail || 'Failed to process CSV file.');
       }
 
-      const data = await res.json();
-      setCsvResponse(data);
-      setTablePage(1);
+      const resData = await res.json();
+      setSummary(resData.summary);
+      fetchReviews(1, '', 'ALL', 'ALL');
+      setCurrentPage(1);
+      setSearchQuery('');
+      setSentimentFilter('ALL');
+      setRatingFilter('ALL');
 
-      // Update global dashboard metrics to match uploaded file
-      setMetrics({
-        total: data.total_reviews,
-        positive: data.sentiment_distribution.Positive,
-        neutral: data.sentiment_distribution.Neutral,
-        negative: data.sentiment_distribution.Negative,
-        source: `Uploaded CSV (${data.filename})`
-      });
+      setIsUploadModalOpen(false);
+      setCsvFile(null);
+      showToast(`Successfully processed ${resData.total_reviews.toLocaleString()} reviews (${uploadMode === 'replace' ? 'replaced active dataset' : 'added to active dataset'})`);
 
     } catch (err) {
-      setCsvError(err.message || 'Error processing CSV file.');
+      setUploadError(err.message || 'Failed to analyze CSV.');
     } finally {
-      setIsUploading(false);
+      setIsUploadingCsv(false);
     }
   };
 
-  // Download analyzed CSV
-  const handleExportCsv = async () => {
-    if (!csvFile) return;
-    const formData = new FormData();
-    formData.append('file', csvFile);
-
+  // Load demo sample dataset
+  const handleLoadDemoDataset = async () => {
+    setIsLoadingSummary(true);
     try {
-      const res = await fetch(`${API_BASE}/export-csv`, {
-        method: 'POST',
-        body: formData
-      });
-      if (!res.ok) throw new Error('Export failed');
+      const res = await fetch(`${API_BASE}/api/dataset/sample`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setSummary(data);
+        fetchReviews(1, '', 'ALL', 'ALL');
+        setIsUploadModalOpen(false);
+        showToast('Sample dataset loaded with 25 customer reviews');
+      }
+    } catch (err) {
+      showToast('Failed to load sample dataset');
+    } finally {
+      setIsLoadingSummary(false);
+    }
+  };
 
+  // Clear dataset
+  const handleClearDataset = async () => {
+    if (!window.confirm('Are you sure you want to clear the active dataset?')) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/dataset/clear`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setSummary(data);
+        fetchReviews(1, '', 'ALL', 'ALL');
+        showToast('Active review dataset cleared');
+      }
+    } catch (err) {
+      showToast('Failed to clear dataset');
+    }
+  };
+
+  // Export CSV
+  const handleExportCsv = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/dataset/export`);
+      if (!res.ok) throw new Error('No data to export.');
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `analyzed_${csvFile.name}`;
+      a.download = `fine_food_insights_${new Date().toISOString().slice(0, 10)}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
+      showToast('Export downloaded successfully');
     } catch (err) {
-      alert('Failed to export CSV: ' + err.message);
+      alert('Could not export dataset: ' + err.message);
     }
   };
 
-  // Quick 10-Row Sample CSV generator for instant demo testing
-  const handleLoadSampleCsv = () => {
-    const sampleCsvData = 
-`Id,ProductId,Text
-1,B001,"The organic peanut butter is creamy, rich, and tastes amazing!"
-2,B002,"Arrived completely stale and expired. Smelled rancid. Never again!"
-3,B003,"It is average tea. Not terrible, but certainly not high grade either."
-4,B004,"Super crunchy cookies! My kids loved every single bite."
-5,B005,"Horrible packaging. Bottle was shattered inside the box. Waste of money."
-6,B006,"A bit too bland for my liking, though the ingredients are healthy."
-7,B007,"Hands down the finest dark roast coffee I have ever brewed."
-8,B008,"Disappointed with the texture. It felt like rubber and had no flavor."
-9,B009,"Decent price for the quantity, though taste is quite plain."
-10,B010,"Outstanding flavor and prompt delivery. Highly recommend to everyone!"`;
-
-    const blob = new Blob([sampleCsvData], { type: 'text/csv' });
-    const file = new File([blob], 'sample_food_reviews.csv', { type: 'text/csv' });
-    setCsvFile(file);
-    setCsvError(null);
-  };
-
-  // Calculated percentage metrics
-  const positivePct = metrics.total > 0 ? ((metrics.positive / metrics.total) * 100).toFixed(1) : 0;
-  const neutralPct = metrics.total > 0 ? ((metrics.neutral / metrics.total) * 100).toFixed(1) : 0;
-  const negativePct = metrics.total > 0 ? ((metrics.negative / metrics.total) * 100).toFixed(1) : 0;
-
-  // Filtered CSV table results
-  const filteredTableResults = (csvResponse?.results_sample || []).filter(item => {
-    const matchesSearch = item.original_text.toLowerCase().includes(tableSearch.toLowerCase()) ||
-                          item.predicted_sentiment.toLowerCase().includes(tableSearch.toLowerCase());
-    const matchesFilter = sentimentFilter === 'ALL' || item.predicted_sentiment === sentimentFilter;
-    return matchesSearch && matchesFilter;
-  });
-
-  const pageSize = 10;
-  const totalPages = Math.ceil(filteredTableResults.length / pageSize) || 1;
-  const paginatedRows = filteredTableResults.slice((tablePage - 1) * pageSize, tablePage * pageSize);
-
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      
-      {/* Top Navbar */}
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          background: 'var(--bg-surface-elevated)',
+          border: '1px solid var(--border-hover)',
+          padding: '0.75rem 1.25rem',
+          borderRadius: 'var(--radius-md)',
+          color: 'var(--text-primary)',
+          fontSize: '0.85rem',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.625rem',
+          zIndex: 200,
+          animation: 'modalFadeIn 0.2s ease-out'
+        }}>
+          <CheckCircle2 size={16} color="var(--positive)" />
+          {toastMessage}
+        </div>
+      )}
+
+      {/* Clean Modern Navigation Bar */}
       <header style={{ 
         borderBottom: '1px solid var(--border-subtle)', 
-        background: 'rgba(11, 15, 25, 0.85)', 
-        backdropFilter: 'blur(12px)',
+        background: 'rgba(12, 13, 14, 0.85)', 
+        backdropFilter: 'blur(8px)',
         position: 'sticky', 
         top: 0, 
-        zIndex: 50 
+        zIndex: 40 
       }}>
-        <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '0.875rem 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ 
+          maxWidth: '1240px', 
+          margin: '0 auto', 
+          padding: '0.875rem 1.5rem', 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'space-between' 
+        }}>
           
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          {/* Logo & Product Name */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
             <div style={{ 
-              width: '2.5rem', 
-              height: '2.5rem', 
-              borderRadius: '0.625rem', 
-              background: 'linear-gradient(135deg, #10b981 0%, #6366f1 100%)', 
+              width: '28px', 
+              height: '28px', 
+              borderRadius: '7px', 
+              background: '#ffffff', 
               display: 'flex', 
               alignItems: 'center', 
               justifyContent: 'center',
-              boxShadow: '0 4px 12px rgba(16, 185, 129, 0.25)'
+              color: '#0c0d0e'
             }}>
-              <BrainCircuit size={22} color="#ffffff" />
+              <MessageSquare size={16} strokeWidth={2.5} />
             </div>
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <h1 style={{ fontSize: '1.125rem', fontWeight: 800, letterSpacing: '-0.02em' }}>
-                  Fine-Food Sentiment Analyzer
-                </h1>
-                <span className="badge badge-primary" style={{ fontSize: '0.65rem' }}>OJT PROJECT</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                <span style={{ fontSize: '0.95rem', fontWeight: 700, letterSpacing: '-0.015em', color: 'var(--text-primary)' }}>
+                  Fine-Food Insights
+                </span>
+                {summary.has_data && (
+                  <span className="badge badge-subtle">
+                    {summary.total_reviews.toLocaleString()} reviews
+                  </span>
+                )}
               </div>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                TF-IDF & Logistic Regression • Amazon Fine Foods Dataset
+                Understand your customer feedback.
               </p>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            {/* Backend Status Pill */}
-            <div style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '0.5rem', 
-              padding: '0.375rem 0.75rem', 
-              borderRadius: '9999px',
-              background: backendStatus === 'connected' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-              border: `1px solid ${backendStatus === 'connected' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-              fontSize: '0.75rem',
-              fontWeight: 600
-            }}>
-              <span style={{ 
-                width: '8px', 
-                height: '8px', 
-                borderRadius: '50%', 
-                backgroundColor: backendStatus === 'connected' ? 'var(--positive)' : 'var(--negative)',
-                boxShadow: backendStatus === 'connected' ? '0 0 8px var(--positive)' : 'none'
-              }} />
-              <span style={{ color: backendStatus === 'connected' ? 'var(--positive)' : 'var(--negative)' }}>
-                {backendStatus === 'connected' ? 'API Online (FastAPI)' : 'API Disconnected'}
-              </span>
-            </div>
+          {/* Action Header Buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+            
+            {summary.has_data && (
+              <button 
+                className="btn btn-ghost" 
+                onClick={handleExportCsv}
+                title="Export active dataset to CSV"
+                style={{ padding: '0.45rem 0.75rem', fontSize: '0.8rem' }}
+              >
+                <Download size={14} />
+                Export
+              </button>
+            )}
 
             <button 
-              onClick={checkHealth}
-              title="Refresh connection"
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}
+              className="btn btn-secondary"
+              onClick={() => { setUploadError(null); setIsUploadModalOpen(true); }}
+              style={{ fontSize: '0.825rem' }}
             >
-              <RefreshCw size={16} />
+              <Upload size={14} />
+              Upload CSV
             </button>
+
+            <button 
+              className="btn btn-primary"
+              onClick={() => { setAddReviewError(null); setIsAddModalOpen(true); }}
+              style={{ fontSize: '0.825rem' }}
+            >
+              <Plus size={14} strokeWidth={2.5} />
+              Add New Review
+            </button>
+
           </div>
 
         </div>
       </header>
 
-      {/* Main Content Container */}
-      <main style={{ maxWidth: '1280px', margin: '0 auto', padding: '2rem 1.5rem', width: '100%', flex: 1 }}>
+      {/* Main Container */}
+      <main style={{ maxWidth: '1240px', margin: '0 auto', padding: '2rem 1.5rem', width: '100%', flex: 1 }}>
 
-        {/* Top KPI Metric Cards */}
-        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-          
-          {/* Card: Total */}
-          <div className="glass-panel glass-panel-hover" style={{ padding: '1.25rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>TOTAL REVIEWS</span>
-              <FileText size={18} color="var(--primary)" />
-            </div>
-            <div style={{ fontSize: '1.875rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-              {metrics.total.toLocaleString()}
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-              {metrics.source}
-            </div>
-          </div>
-
-          {/* Card: Positive */}
-          <div className="glass-panel glass-panel-hover" style={{ padding: '1.25rem', borderLeft: '3px solid var(--positive)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--positive)', fontWeight: 600 }}>POSITIVE (4–5 ★)</span>
-              <ThumbsUp size={18} color="var(--positive)" />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-              <div style={{ fontSize: '1.875rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                {metrics.positive.toLocaleString()}
-              </div>
-              <span className="badge badge-positive">{positivePct}%</span>
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-              Precision: 95.8% • Recall: 83.9%
-            </div>
-          </div>
-
-          {/* Card: Neutral */}
-          <div className="glass-panel glass-panel-hover" style={{ padding: '1.25rem', borderLeft: '3px solid var(--neutral)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--neutral)', fontWeight: 600 }}>NEUTRAL (3 ★)</span>
-              <Minus size={18} color="var(--neutral)" />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-              <div style={{ fontSize: '1.875rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                {metrics.neutral.toLocaleString()}
-              </div>
-              <span className="badge badge-neutral">{neutralPct}%</span>
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-              Balanced Recall: 54.0%
-            </div>
-          </div>
-
-          {/* Card: Negative */}
-          <div className="glass-panel glass-panel-hover" style={{ padding: '1.25rem', borderLeft: '3px solid var(--negative)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--negative)', fontWeight: 600 }}>NEGATIVE (1–2 ★)</span>
-              <ThumbsDown size={18} color="var(--negative)" />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-              <div style={{ fontSize: '1.875rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                {metrics.negative.toLocaleString()}
-              </div>
-              <span className="badge badge-negative">{negativePct}%</span>
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-              Customer Complaints Detected: 75.3%
-            </div>
-          </div>
-
-        </section>
-
-        {/* Visual Analytics Bar */}
-        <section className="glass-panel" style={{ padding: '1.25rem', marginBottom: '2rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <BarChart3 size={18} color="var(--primary)" />
-              <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>Sentiment Distribution Share</span>
-            </div>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Model: Logistic Regression (C=1.0, class_weight='balanced')
-            </span>
-          </div>
-
-          {/* Stacked Progress Bar */}
+        {/* EMPTY STATE (When no data has been uploaded) */}
+        {!summary.has_data && !isLoadingSummary ? (
           <div style={{ 
-            height: '1.25rem', 
-            borderRadius: '0.625rem', 
-            overflow: 'hidden', 
-            display: 'flex', 
-            background: 'rgba(0,0,0,0.3)',
-            boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.5)' 
-          }}>
-            <div style={{ width: `${positivePct}%`, background: 'var(--positive)', transition: 'width 0.4s ease' }} title={`Positive: ${positivePct}%`} />
-            <div style={{ width: `${neutralPct}%`, background: 'var(--neutral)', transition: 'width 0.4s ease' }} title={`Neutral: ${neutralPct}%`} />
-            <div style={{ width: `${negativePct}%`, background: 'var(--negative)', transition: 'width 0.4s ease' }} title={`Negative: ${negativePct}%`} />
-          </div>
-
-          {/* Legend */}
-          <div style={{ display: 'flex', gap: '1.5rem', marginTop: '0.75rem', fontSize: '0.75rem' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-              <span style={{ width: '10px', height: '10px', borderRadius: '2px', background: 'var(--positive)' }} />
-              Positive ({positivePct}%)
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-              <span style={{ width: '10px', height: '10px', borderRadius: '2px', background: 'var(--neutral)' }} />
-              Neutral ({neutralPct}%)
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-              <span style={{ width: '10px', height: '10px', borderRadius: '2px', background: 'var(--negative)' }} />
-              Negative ({negativePct}%)
-            </span>
-          </div>
-        </section>
-
-        {/* Tab Navigation */}
-        <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid var(--border-subtle)', marginBottom: '1.5rem' }}>
-          
-          <button 
-            onClick={() => setActiveTab('playground')}
-            style={{ 
-              padding: '0.75rem 1.25rem', 
-              background: 'transparent', 
-              border: 'none', 
-              borderBottom: activeTab === 'playground' ? '2px solid var(--primary)' : '2px solid transparent',
-              color: activeTab === 'playground' ? 'var(--text-primary)' : 'var(--text-muted)',
-              fontWeight: activeTab === 'playground' ? 700 : 500,
-              fontSize: '0.9rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              transition: 'all 0.2s'
-            }}
-          >
-            <Sparkles size={16} color={activeTab === 'playground' ? 'var(--primary)' : 'currentColor'} />
-            Manual Review Tester
-          </button>
-
-          <button 
-            onClick={() => setActiveTab('csv')}
-            style={{ 
-              padding: '0.75rem 1.25rem', 
-              background: 'transparent', 
-              border: 'none', 
-              borderBottom: activeTab === 'csv' ? '2px solid var(--primary)' : '2px solid transparent',
-              color: activeTab === 'csv' ? 'var(--text-primary)' : 'var(--text-muted)',
-              fontWeight: activeTab === 'csv' ? 700 : 500,
-              fontSize: '0.9rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              transition: 'all 0.2s'
-            }}
-          >
-            <UploadCloud size={16} color={activeTab === 'csv' ? 'var(--primary)' : 'currentColor'} />
-            CSV Dataset Upload & Analytics
-          </button>
-
-          <button 
-            onClick={() => setActiveTab('methodology')}
-            style={{ 
-              padding: '0.75rem 1.25rem', 
-              background: 'transparent', 
-              border: 'none', 
-              borderBottom: activeTab === 'methodology' ? '2px solid var(--primary)' : '2px solid transparent',
-              color: activeTab === 'methodology' ? 'var(--text-primary)' : 'var(--text-muted)',
-              fontWeight: activeTab === 'methodology' ? 700 : 500,
-              fontSize: '0.9rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              transition: 'all 0.2s'
-            }}
-          >
-            <ShieldCheck size={16} color={activeTab === 'methodology' ? 'var(--primary)' : 'currentColor'} />
-            Model Architecture & Viva Guide
-          </button>
-
-        </div>
-
-        {/* TAB 1: Single Review Prediction Playground */}
-        {activeTab === 'playground' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '1.5rem' }}>
+            maxWidth: '560px', 
+            margin: '4rem auto', 
+            textAlign: 'center', 
+            padding: '3rem 2rem' 
+          }} className="surface-card">
             
-            {/* Input Column */}
-            <div className="glass-panel" style={{ padding: '1.5rem' }}>
-              <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '0.5rem' }}>
-                Analyze Review Sentiment
-              </h2>
-              <p style={{ fontSize: '0.825rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
-                Type or paste any customer review. The NLP pipeline normalizes the text and applies the trained TF-IDF vectorizer and Logistic Regression classifier.
-              </p>
-
-              {/* Textarea */}
-              <textarea 
-                className="textarea-custom"
-                value={reviewText}
-                onChange={(e) => setReviewText(e.target.value)}
-                placeholder="E.g., The dark chocolate almonds were fresh, crunchy, and absolutely delicious!"
-              />
-
-              {predictionError && (
-                <div style={{ 
-                  marginTop: '0.75rem', 
-                  padding: '0.625rem 0.875rem', 
-                  borderRadius: '0.5rem', 
-                  background: 'var(--negative-bg)', 
-                  border: '1px solid var(--negative-border)',
-                  color: 'var(--negative)',
-                  fontSize: '0.8rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem'
-                }}>
-                  <AlertCircle size={16} />
-                  {predictionError}
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  {reviewText.length} characters • {reviewText.trim() ? reviewText.trim().split(/\s+/).length : 0} words
-                </span>
-                
-                <button 
-                  className="btn btn-primary"
-                  onClick={() => handlePredict()}
-                  disabled={isPredicting || !reviewText.trim()}
-                >
-                  {isPredicting ? (
-                    <>
-                      <RefreshCw size={16} className="animate-spin" />
-                      Analyzing...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles size={16} />
-                      Predict Sentiment
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Preset Chips */}
-              <div style={{ marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-subtle)' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, display: 'block', marginBottom: '0.625rem' }}>
-                  QUICK EXAMPLES TO TEST:
-                </span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                  {examples.map((ex, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => {
-                        setReviewText(ex.text);
-                        handlePredict(ex.text);
-                      }}
-                      style={{
-                        padding: '0.375rem 0.75rem',
-                        borderRadius: '0.5rem',
-                        fontSize: '0.75rem',
-                        background: 'rgba(255, 255, 255, 0.05)',
-                        border: '1px solid var(--border-subtle)',
-                        color: 'var(--text-secondary)',
-                        cursor: 'pointer',
-                        transition: 'all 0.15s'
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--primary)'}
-                      onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border-subtle)'}
-                    >
-                      {ex.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
+            <div style={{ 
+              width: '48px', 
+              height: '48px', 
+              borderRadius: '12px', 
+              background: 'var(--bg-surface-elevated)', 
+              border: '1px solid var(--border-subtle)',
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              margin: '0 auto 1.25rem',
+              color: 'var(--text-secondary)'
+            }}>
+              <Inbox size={22} />
             </div>
 
-            {/* Prediction Result Column */}
-            <div>
-              {predictionResult ? (
-                <div className="glass-panel" style={{ padding: '1.5rem', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                  <div>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                      INFERENCE RESULT
-                    </span>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+              No Customer Reviews Analyzed Yet
+            </h2>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: '1.75rem' }}>
+              Upload your customer feedback CSV or add individual reviews to generate real-time sentiment distribution, customer satisfaction metrics, and complaint themes.
+            </p>
 
-                    {/* Sentiment Badge Banner */}
-                    <div style={{ 
-                      marginTop: '0.75rem', 
-                      padding: '1.25rem', 
-                      borderRadius: '0.75rem', 
-                      background: predictionResult.sentiment === 'Positive' 
-                        ? 'var(--positive-bg)' 
-                        : (predictionResult.sentiment === 'Neutral' ? 'var(--neutral-bg)' : 'var(--negative-bg)'),
-                      border: `1px solid ${
-                        predictionResult.sentiment === 'Positive' 
-                          ? 'var(--positive-border)' 
-                          : (predictionResult.sentiment === 'Neutral' ? 'var(--neutral-border)' : 'var(--negative-border)')
-                      }`,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between'
-                    }}>
-                      <div>
-                        <span style={{ 
-                          fontSize: '0.8rem', 
-                          fontWeight: 600, 
-                          color: predictionResult.sentiment === 'Positive' 
-                            ? 'var(--positive)' 
-                            : (predictionResult.sentiment === 'Neutral' ? 'var(--neutral)' : 'var(--negative)') 
-                        }}>
-                          PREDICTED SENTIMENT
-                        </span>
-                        <div style={{ fontSize: '1.75rem', fontWeight: 800, marginTop: '0.25rem' }}>
-                          {predictionResult.sentiment}
-                        </div>
-                      </div>
-
-                      <div style={{ textAlign: 'right' }}>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Confidence</span>
-                        <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>
-                          {(predictionResult.confidence * 100).toFixed(1)}%
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Probability Breakdown Progress Bars */}
-                    <div style={{ marginTop: '1.5rem' }}>
-                      <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                        Class Probabilities
-                      </span>
-
-                      {/* Positive Bar */}
-                      <div style={{ marginTop: '0.625rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
-                          <span style={{ color: 'var(--positive)', fontWeight: 600 }}>Positive</span>
-                          <span>{(predictionResult.probabilities.Positive * 100).toFixed(1)}%</span>
-                        </div>
-                        <div style={{ height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-                          <div style={{ width: `${predictionResult.probabilities.Positive * 100}%`, height: '100%', background: 'var(--positive)', transition: 'width 0.4s ease' }} />
-                        </div>
-                      </div>
-
-                      {/* Neutral Bar */}
-                      <div style={{ marginTop: '0.625rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
-                          <span style={{ color: 'var(--neutral)', fontWeight: 600 }}>Neutral</span>
-                          <span>{(predictionResult.probabilities.Neutral * 100).toFixed(1)}%</span>
-                        </div>
-                        <div style={{ height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-                          <div style={{ width: `${predictionResult.probabilities.Neutral * 100}%`, height: '100%', background: 'var(--neutral)', transition: 'width 0.4s ease' }} />
-                        </div>
-                      </div>
-
-                      {/* Negative Bar */}
-                      <div style={{ marginTop: '0.625rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
-                          <span style={{ color: 'var(--negative)', fontWeight: 600 }}>Negative</span>
-                          <span>{(predictionResult.probabilities.Negative * 100).toFixed(1)}%</span>
-                        </div>
-                        <div style={{ height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-                          <div style={{ width: `${predictionResult.probabilities.Negative * 100}%`, height: '100%', background: 'var(--negative)', transition: 'width 0.4s ease' }} />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Cleaned text inspector */}
-                    <div style={{ marginTop: '1.25rem', padding: '0.875rem', background: 'rgba(0,0,0,0.25)', borderRadius: '0.5rem', border: '1px solid var(--border-subtle)' }}>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                        NLP Normalized Text
-                      </span>
-                      <p style={{ fontSize: '0.785rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                        "{predictionResult.cleaned_text}"
-                      </p>
-                    </div>
-
-                  </div>
-
-                  <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    <span>Features: 25,000 TF-IDF N-grams</span>
-                    <span>Status: Verified via FastAPI</span>
-                  </div>
-
-                </div>
-              ) : (
-                <div className="glass-panel" style={{ padding: '2.5rem 1.5rem', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-                  <div style={{ width: '3.5rem', height: '3.5rem', borderRadius: '50%', background: 'rgba(255,255,255,0.03)', border: '1px dashed var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1rem' }}>
-                    <Sparkles size={24} color="var(--text-muted)" />
-                  </div>
-                  <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.5rem' }}>
-                    No Prediction Yet
-                  </h3>
-                  <p style={{ fontSize: '0.825rem', color: 'var(--text-muted)', maxWidth: '280px' }}>
-                    Enter review text on the left and click Predict, or pick one of the quick test chips above.
-                  </p>
-                </div>
-              )}
-            </div>
-
-          </div>
-        )}
-
-        {/* Session History (Playground Tab) */}
-        {activeTab === 'playground' && sessionHistory.length > 0 && (
-          <section className="glass-panel" style={{ marginTop: '1.5rem', padding: '1.25rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-              <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>Recent Predictions in this Session</span>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
               <button 
-                onClick={() => setSessionHistory([])}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: '0.75rem', cursor: 'pointer' }}
+                className="btn btn-primary"
+                onClick={() => { setUploadError(null); setIsUploadModalOpen(true); }}
               >
-                Clear History
+                <Upload size={14} />
+                Upload Review CSV
+              </button>
+
+              <button 
+                className="btn btn-secondary"
+                onClick={handleLoadDemoDataset}
+              >
+                <Sparkles size={14} />
+                Load Demo Reviews (25 items)
+              </button>
+
+              <button 
+                className="btn btn-ghost"
+                onClick={() => { setAddReviewError(null); setIsAddModalOpen(true); }}
+              >
+                <Plus size={14} />
+                Add Review Manually
               </button>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '0.75rem' }}>
-              {sessionHistory.map(item => (
-                <div 
-                  key={item.id}
-                  style={{ 
-                    padding: '0.75rem', 
-                    borderRadius: '0.5rem', 
-                    background: 'rgba(255,255,255,0.02)', 
-                    border: '1px solid var(--border-subtle)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    justifyContent: 'space-between'
-                  }}
-                >
-                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                    "{item.text}"
-                  </p>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem' }}>
-                    <span className={`badge badge-${item.sentiment.toLowerCase()}`}>
-                      {item.sentiment}
-                    </span>
-                    <span style={{ color: 'var(--text-muted)' }}>
-                      {(item.confidence * 100).toFixed(0)}% • {item.timestamp}
-                    </span>
+          </div>
+        ) : (
+          <>
+            {/* OVERVIEW SECTION: 4 Clean Metric Cards */}
+            <section style={{ marginBottom: '1.5rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                
+                {/* Total Reviews */}
+                <div className="surface-card" style={{ padding: '1.25rem' }}>
+                  <div style={{ fontSize: '0.775rem', color: 'var(--text-secondary)', fontWeight: 500, marginBottom: '0.375rem' }}>
+                    Total Reviews
+                  </div>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                    {summary.total_reviews.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.375rem' }}>
+                    {summary.last_updated ? `Last entry: ${summary.last_updated.slice(0, 16)}` : 'Active dataset'}
                   </div>
                 </div>
-              ))}
-            </div>
-          </section>
-        )}
 
-        {/* TAB 2: CSV Upload & Batch Analytics */}
-        {activeTab === 'csv' && (
-          <div>
-            {/* Upload Box */}
-            <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center', marginBottom: '1.5rem' }}>
-              <div style={{ maxWidth: '520px', margin: '0 auto' }}>
-                <div style={{ 
-                  width: '4rem', 
-                  height: '4rem', 
-                  borderRadius: '1rem', 
-                  background: 'var(--primary-bg)', 
-                  border: '1px solid var(--primary-border)',
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'center', 
-                  margin: '0 auto 1.25rem' 
-                }}>
-                  <UploadCloud size={32} color="var(--primary)" />
-                </div>
-
-                <h2 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '0.5rem' }}>
-                  Upload CSV for Batch Sentiment Analytics
-                </h2>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                  Upload any customer reviews CSV. The system auto-detects review columns (<code style={{ color: 'var(--primary)', fontFamily: 'var(--font-mono)' }}>Text</code>, <code style={{ color: 'var(--primary)', fontFamily: 'var(--font-mono)' }}>Review</code>, etc.), runs vectorized batch inference, and updates the entire dashboard.
-                </p>
-
-                {/* Hidden native input */}
-                <input 
-                  type="file" 
-                  ref={fileInputRef}
-                  accept=".csv"
-                  onChange={handleFileChange}
-                  style={{ display: 'none' }}
-                />
-
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                  <button 
-                    className="btn btn-secondary"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <FileText size={16} />
-                    {csvFile ? csvFile.name : 'Choose CSV File...'}
-                  </button>
-
-                  <button 
-                    className="btn btn-primary"
-                    onClick={handleUploadCsv}
-                    disabled={!csvFile || isUploading}
-                  >
-                    {isUploading ? (
-                      <>
-                        <RefreshCw size={16} className="animate-spin" />
-                        Classifying Reviews...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles size={16} />
-                        Run Batch Analysis
-                      </>
-                    )}
-                  </button>
-
-                  <button 
-                    className="btn btn-secondary"
-                    onClick={handleLoadSampleCsv}
-                    title="Load an in-memory 10-row dataset for quick testing"
-                  >
-                    Load Demo Sample CSV
-                  </button>
-                </div>
-
-                {csvError && (
-                  <div style={{ 
-                    marginTop: '1rem', 
-                    padding: '0.75rem', 
-                    borderRadius: '0.5rem', 
-                    background: 'var(--negative-bg)', 
-                    border: '1px solid var(--negative-border)',
-                    color: 'var(--negative)',
-                    fontSize: '0.8rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.5rem'
-                  }}>
-                    <AlertCircle size={16} />
-                    {csvError}
+                {/* Positive Reviews */}
+                <div className="surface-card" style={{ padding: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.375rem' }}>
+                    <span style={{ fontSize: '0.775rem', color: 'var(--text-secondary)', fontWeight: 500 }}>Positive Feedback</span>
+                    <span className="badge badge-positive">{summary.sentiment_percentages.Positive}%</span>
                   </div>
-                )}
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                    {summary.sentiment_distribution.Positive.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.375rem' }}>
+                    Satisfied customer experiences
+                  </div>
+                </div>
+
+                {/* Neutral Reviews */}
+                <div className="surface-card" style={{ padding: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.375rem' }}>
+                    <span style={{ fontSize: '0.775rem', color: 'var(--text-secondary)', fontWeight: 500 }}>Neutral Reviews</span>
+                    <span className="badge badge-neutral">{summary.sentiment_percentages.Neutral}%</span>
+                  </div>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                    {summary.sentiment_distribution.Neutral.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.375rem' }}>
+                    Mixed feedback & balanced opinions
+                  </div>
+                </div>
+
+                {/* Negative Reviews */}
+                <div className="surface-card" style={{ padding: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.375rem' }}>
+                    <span style={{ fontSize: '0.775rem', color: 'var(--text-secondary)', fontWeight: 500 }}>Customer Complaints</span>
+                    <span className="badge badge-negative">{summary.sentiment_percentages.Negative}%</span>
+                  </div>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                    {summary.sentiment_distribution.Negative.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.375rem' }}>
+                    Issues requiring attention
+                  </div>
+                </div>
+
               </div>
-            </div>
+            </section>
 
-            {/* CSV Results Breakdown & Table */}
-            {csvResponse && (
-              <div className="glass-panel" style={{ padding: '1.5rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
+            {/* SENTIMENT OVERVIEW PROPORTIONAL BAR */}
+            <section className="surface-card" style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Customer Sentiment Overview
+                </span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {summary.total_reviews} total feedback items
+                </span>
+              </div>
+
+              {/* Segmented bar */}
+              <div style={{ 
+                height: '10px', 
+                borderRadius: '5px', 
+                overflow: 'hidden', 
+                display: 'flex', 
+                background: 'var(--bg-input)' 
+              }}>
+                <div style={{ width: `${summary.sentiment_percentages.Positive}%`, background: 'var(--positive)', transition: 'width 0.3s ease' }} />
+                <div style={{ width: `${summary.sentiment_percentages.Neutral}%`, background: 'var(--neutral)', transition: 'width 0.3s ease' }} />
+                <div style={{ width: `${summary.sentiment_percentages.Negative}%`, background: 'var(--negative)', transition: 'width 0.3s ease' }} />
+              </div>
+
+              {/* Clean Legend */}
+              <div style={{ display: 'flex', gap: '1.5rem', marginTop: '0.875rem', fontSize: '0.775rem' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: 'var(--text-secondary)' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--positive)' }} />
+                  Positive ({summary.sentiment_percentages.Positive}% • {summary.sentiment_distribution.Positive})
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: 'var(--text-secondary)' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--neutral)' }} />
+                  Neutral ({summary.sentiment_percentages.Neutral}% • {summary.sentiment_distribution.Neutral})
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: 'var(--text-secondary)' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--negative)' }} />
+                  Negative ({summary.sentiment_percentages.Negative}% • {summary.sentiment_distribution.Negative})
+                </span>
+              </div>
+            </section>
+
+            {/* CUSTOMER INSIGHTS: Rating Distribution & Feedback Themes */}
+            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+              
+              {/* Rating Distribution Card */}
+              <div className="surface-card" style={{ padding: '1.25rem' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '1rem' }}>
+                  Customer Ratings Breakdown
+                </span>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {[5, 4, 3, 2, 1].map(stars => {
+                    const count = summary.rating_distribution[String(stars)] || 0;
+                    const pct = summary.total_reviews > 0 ? (count / summary.total_reviews * 100).toFixed(0) : 0;
+                    return (
+                      <div key={stars} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.775rem' }}>
+                        <span style={{ width: '38px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                          {stars} <Star size={11} fill="#eab308" color="#eab308" />
+                        </span>
+                        <div style={{ flex: 1, height: '6px', background: 'var(--bg-input)', borderRadius: '3px', overflow: 'hidden' }}>
+                          <div style={{ 
+                            width: `${pct}%`, 
+                            height: '100%', 
+                            background: stars >= 4 ? 'var(--positive)' : (stars === 3 ? 'var(--neutral)' : 'var(--negative)') 
+                          }} />
+                        </div>
+                        <span style={{ width: '42px', textAlign: 'right', color: 'var(--text-muted)' }}>
+                          {count}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Feedback Themes Card */}
+              <div className="surface-card" style={{ padding: '1.25rem' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '1rem' }}>
+                  Key Customer Feedback Themes
+                </span>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  {/* Positive Mentions */}
                   <div>
-                    <h3 style={{ fontSize: '1.1rem', fontWeight: 800 }}>
-                      Analyzed Dataset: {csvResponse.filename}
-                    </h3>
-                    <p style={{ fontSize: '0.775rem', color: 'var(--text-muted)' }}>
-                      Detected text column: <strong style={{ color: 'var(--text-primary)' }}>{csvResponse.text_column_detected}</strong> • Total reviews: {csvResponse.total_reviews.toLocaleString()}
-                    </p>
-                  </div>
-
-                  <button 
-                    className="btn btn-secondary"
-                    onClick={handleExportCsv}
-                  >
-                    <Download size={16} />
-                    Export Full Analyzed CSV
-                  </button>
-                </div>
-
-                {/* Table Filter Controls */}
-                <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-                  <div style={{ position: 'relative', flex: 1, minWidth: '220px' }}>
-                    <Search size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)' }} />
-                    <input 
-                      type="text" 
-                      value={tableSearch}
-                      onChange={(e) => { setTableSearch(e.target.value); setTablePage(1); }}
-                      placeholder="Search reviews or sentiment..."
-                      style={{ 
-                        width: '100%', 
-                        padding: '0.5rem 0.75rem 0.5rem 2.25rem', 
-                        background: 'rgba(0,0,0,0.3)', 
-                        border: '1px solid var(--border-subtle)', 
-                        borderRadius: '0.5rem', 
-                        color: 'var(--text-primary)',
-                        fontSize: '0.85rem'
-                      }}
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '0.375rem' }}>
-                    {['ALL', 'Positive', 'Neutral', 'Negative'].map(filter => (
-                      <button
-                        key={filter}
-                        onClick={() => { setSentimentFilter(filter); setTablePage(1); }}
-                        style={{
-                          padding: '0.4rem 0.75rem',
-                          borderRadius: '0.5rem',
-                          fontSize: '0.75rem',
-                          fontWeight: 600,
-                          background: sentimentFilter === filter ? 'var(--primary)' : 'rgba(255,255,255,0.05)',
-                          color: sentimentFilter === filter ? '#ffffff' : 'var(--text-secondary)',
-                          border: '1px solid var(--border-subtle)',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        {filter}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Reviews Preview Table */}
-                <div style={{ overflowX: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '0.75rem' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.825rem', textAlign: 'left' }}>
-                    <thead>
-                      <tr style={{ background: 'rgba(255,255,255,0.03)', borderBottom: '1px solid var(--border-subtle)' }}>
-                        <th style={{ padding: '0.75rem 1rem', width: '60px', color: 'var(--text-muted)' }}>ID</th>
-                        <th style={{ padding: '0.75rem 1rem', color: 'var(--text-muted)' }}>REVIEW TEXT</th>
-                        <th style={{ padding: '0.75rem 1rem', width: '130px', color: 'var(--text-muted)' }}>PREDICTION</th>
-                        <th style={{ padding: '0.75rem 1rem', width: '110px', color: 'var(--text-muted)' }}>CONFIDENCE</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {paginatedRows.length > 0 ? (
-                        paginatedRows.map((row, idx) => (
-                          <tr key={idx} style={{ borderBottom: '1px solid var(--border-subtle)', transition: 'background 0.15s' }}>
-                            <td style={{ padding: '0.75rem 1rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                              {row.id}
-                            </td>
-                            <td style={{ padding: '0.75rem 1rem', color: 'var(--text-primary)', maxWidth: '480px' }}>
-                              "{row.original_text}"
-                            </td>
-                            <td style={{ padding: '0.75rem 1rem' }}>
-                              <span className={`badge badge-${row.predicted_sentiment.toLowerCase()}`}>
-                                {row.predicted_sentiment}
-                              </span>
-                            </td>
-                            <td style={{ padding: '0.75rem 1rem', fontWeight: 600 }}>
-                              {(row.confidence * 100).toFixed(1)}%
-                            </td>
-                          </tr>
+                    <span style={{ fontSize: '0.725rem', fontWeight: 600, color: 'var(--positive)', textTransform: 'uppercase', display: 'block', marginBottom: '0.5rem' }}>
+                      What Customers Love
+                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      {summary.positive_themes.length > 0 ? (
+                        summary.positive_themes.map((item, idx) => (
+                          <div key={idx} style={{ 
+                            fontSize: '0.75rem', 
+                            padding: '0.3rem 0.5rem', 
+                            background: 'var(--positive-bg)', 
+                            border: '1px solid var(--positive-border)', 
+                            borderRadius: '4px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            color: 'var(--positive)'
+                          }}>
+                            <span>{item.theme}</span>
+                            <span style={{ opacity: 0.8 }}>{item.mentions}</span>
+                          </div>
                         ))
                       ) : (
-                        <tr>
-                          <td colSpan={4} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                            No reviews match the selected filter.
-                          </td>
-                        </tr>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No positive themes yet.</span>
                       )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Table Pagination */}
-                {totalPages > 1 && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    <span>Showing {(tablePage - 1) * pageSize + 1} to {Math.min(tablePage * pageSize, filteredTableResults.length)} of {filteredTableResults.length} preview rows</span>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button 
-                        className="btn btn-secondary"
-                        style={{ padding: '0.25rem 0.625rem', fontSize: '0.75rem' }}
-                        disabled={tablePage === 1}
-                        onClick={() => setTablePage(p => Math.max(1, p - 1))}
-                      >
-                        Previous
-                      </button>
-                      <button 
-                        className="btn btn-secondary"
-                        style={{ padding: '0.25rem 0.625rem', fontSize: '0.75rem' }}
-                        disabled={tablePage === totalPages}
-                        onClick={() => setTablePage(p => Math.min(totalPages, p + 1))}
-                      >
-                        Next
-                      </button>
                     </div>
                   </div>
-                )}
 
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 3: Model Architecture & Viva Defense Reference */}
-        {activeTab === 'methodology' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}>
-            
-            {/* Card 1: Pipeline Breakdown */}
-            <div className="glass-panel" style={{ padding: '1.5rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                <BrainCircuit size={20} color="var(--primary)" />
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>NLP & ML Pipeline</h3>
-              </div>
-              <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.875rem', fontSize: '0.825rem' }}>
-                <li style={{ display: 'flex', gap: '0.75rem' }}>
-                  <span style={{ color: 'var(--primary)', fontWeight: 700 }}>1.</span>
+                  {/* Negative Complaints */}
                   <div>
-                    <strong>Data Anomaly Filtration:</strong> Stripped records where <code style={{ fontFamily: 'var(--font-mono)' }}>HelpfulnessNumerator &gt; HelpfulnessDenominator</code> (corrupted votes).
+                    <span style={{ fontSize: '0.725rem', fontWeight: 600, color: 'var(--negative)', textTransform: 'uppercase', display: 'block', marginBottom: '0.5rem' }}>
+                      Common Complaints
+                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      {summary.negative_themes.length > 0 ? (
+                        summary.negative_themes.map((item, idx) => (
+                          <div key={idx} style={{ 
+                            fontSize: '0.75rem', 
+                            padding: '0.3rem 0.5rem', 
+                            background: 'var(--negative-bg)', 
+                            border: '1px solid var(--negative-border)', 
+                            borderRadius: '4px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            color: 'var(--negative)'
+                          }}>
+                            <span>{item.theme}</span>
+                            <span style={{ opacity: 0.8 }}>{item.mentions}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No complaints detected.</span>
+                      )}
+                    </div>
                   </div>
-                </li>
-                <li style={{ display: 'flex', gap: '0.75rem' }}>
-                  <span style={{ color: 'var(--primary)', fontWeight: 700 }}>2.</span>
-                  <div>
-                    <strong>Deduplication:</strong> Eliminated 174,875 duplicate review texts (cross-posted product variations) to prevent train/test string memorization.
-                  </div>
-                </li>
-                <li style={{ display: 'flex', gap: '0.75rem' }}>
-                  <span style={{ color: 'var(--primary)', fontWeight: 700 }}>3.</span>
-                  <div>
-                    <strong>Negation Preservation:</strong> Customized English stopwords to retain critical negation cues (<code style={{ fontFamily: 'var(--font-mono)' }}>not</code>, <code style={{ fontFamily: 'var(--font-mono)' }}>no</code>, <code style={{ fontFamily: 'var(--font-mono)' }}>never</code>, <code style={{ fontFamily: 'var(--font-mono)' }}>cannot</code>).
-                  </div>
-                </li>
-                <li style={{ display: 'flex', gap: '0.75rem' }}>
-                  <span style={{ color: 'var(--primary)', fontWeight: 700 }}>4.</span>
-                  <div>
-                    <strong>Chronological Split:</strong> 80% train (1999–May 2012), 20% test (May 2012–Oct 2012) to realistically prevent future data leakage.
-                  </div>
-                </li>
-                <li style={{ display: 'flex', gap: '0.75rem' }}>
-                  <span style={{ color: 'var(--primary)', fontWeight: 700 }}>5.</span>
-                  <div>
-                    <strong>TF-IDF & Balanced Logistic Regression:</strong> Fitted 25,000 unigrams/bigrams with <code style={{ fontFamily: 'var(--font-mono)' }}>class_weight='balanced'</code> to overcome the 78% positive class skew.
-                  </div>
-                </li>
-              </ul>
-            </div>
-
-            {/* Card 2: Confusion Matrix & Metrics */}
-            <div className="glass-panel" style={{ padding: '1.5rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                <BarChart3 size={20} color="var(--positive)" />
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Evaluation Matrix</h3>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', textAlign: 'center', marginBottom: '1rem' }}>
-                <div style={{ padding: '0.625rem', background: 'rgba(255,255,255,0.03)', borderRadius: '0.5rem' }}>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>ACCURACY</div>
-                  <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-primary)' }}>80.16%</div>
                 </div>
-                <div style={{ padding: '0.625rem', background: 'rgba(99,102,241,0.1)', borderRadius: '0.5rem', border: '1px solid var(--primary-border)' }}>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--primary)' }}>MACRO F1</div>
-                  <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--primary)' }}>0.6560</div>
-                </div>
-                <div style={{ padding: '0.625rem', background: 'rgba(255,255,255,0.03)', borderRadius: '0.5rem' }}>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>WEIGHTED F1</div>
-                  <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-primary)' }}>0.8246</div>
-                </div>
+
               </div>
 
-              <div style={{ fontSize: '0.785rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <p>
-                  • <strong>Positive Recall (83.9%):</strong> High confidence in detecting satisfied reviews.
-                </p>
-                <p>
-                  • <strong>Negative Recall (75.3%):</strong> Essential e-commerce capability to isolate customer churn and product defects.
-                </p>
-                <p>
-                  • <strong>Neutral Recall (54.0%):</strong> Balanced weights prevented minority neutral reviews from collapsing to near zero.
-                </p>
-              </div>
-            </div>
+            </section>
 
-            {/* Card 3: Top N-Gram Drivers */}
-            <div className="glass-panel" style={{ padding: '1.5rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                <Sparkles size={20} color="var(--neutral)" />
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Learned Semantic Drivers</h3>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem', fontSize: '0.8rem' }}>
+            {/* CUSTOMER REVIEWS EXPLORER TABLE */}
+            <section className="surface-card" style={{ padding: '1.25rem' }}>
+              
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
                 <div>
-                  <span className="badge badge-positive" style={{ marginBottom: '0.375rem' }}>Positive Drivers</span>
-                  <div style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
-                    great, best, delicious, love, excellent, perfect, favorite, highly recommend, awesome
-                  </div>
+                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Customer Reviews
+                  </h3>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Showing {reviewsData.total} feedback records
+                  </span>
                 </div>
 
-                <div>
-                  <span className="badge badge-neutral" style={{ marginBottom: '0.375rem' }}>Neutral Drivers</span>
-                  <div style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
-                    okay, average, decent but, nothing special, alright, wanted love, fair, ok
-                  </div>
-                </div>
-
-                <div>
-                  <span className="badge badge-negative" style={{ marginBottom: '0.375rem' }}>Negative Drivers</span>
-                  <div style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
-                    worst, disappointed, terrible, horrible, awful, stale, bad, waste money, threw away
-                  </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <button 
+                    className="btn btn-ghost" 
+                    onClick={() => fetchReviews(currentPage, searchQuery, sentimentFilter, ratingFilter)}
+                    title="Refresh reviews"
+                    style={{ padding: '0.35rem', color: 'var(--text-muted)' }}
+                  >
+                    <RefreshCw size={14} className={isLoadingReviews ? 'animate-spin' : ''} />
+                  </button>
+                  <button 
+                    className="btn btn-ghost" 
+                    onClick={handleClearDataset}
+                    style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', color: 'var(--negative)' }}
+                  >
+                    Reset Dataset
+                  </button>
                 </div>
               </div>
-            </div>
 
-          </div>
+              {/* Search & Filter Toolbar */}
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                
+                {/* Search Box */}
+                <div style={{ position: 'relative', flex: 1, minWidth: '220px' }}>
+                  <Search size={14} color="var(--text-muted)" style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)' }} />
+                  <input 
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); }}
+                    placeholder="Search reviews, products, customers..."
+                    className="input-text"
+                    style={{ paddingLeft: '2.1rem', fontSize: '0.8rem' }}
+                  />
+                </div>
+
+                {/* Sentiment Filter Tabs */}
+                <div style={{ display: 'flex', background: 'var(--bg-input)', padding: '2px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                  {['ALL', 'Positive', 'Neutral', 'Negative'].map(val => (
+                    <button
+                      key={val}
+                      onClick={() => { setSentimentFilter(val); setCurrentPage(1); }}
+                      style={{
+                        padding: '0.35rem 0.75rem',
+                        borderRadius: 'var(--radius-sm)',
+                        fontSize: '0.75rem',
+                        fontWeight: sentimentFilter === val ? 600 : 500,
+                        background: sentimentFilter === val ? 'var(--bg-surface-elevated)' : 'transparent',
+                        color: sentimentFilter === val ? 'var(--text-primary)' : 'var(--text-muted)',
+                        border: 'none',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {val}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Star Filter Dropdown */}
+                <select
+                  value={ratingFilter}
+                  onChange={(e) => { setRatingFilter(e.target.value); setCurrentPage(1); }}
+                  className="input-text"
+                  style={{ width: 'auto', paddingRight: '1.5rem', fontSize: '0.8rem' }}
+                >
+                  <option value="ALL">All Ratings</option>
+                  <option value="5">5 Stars</option>
+                  <option value="4">4 Stars</option>
+                  <option value="3">3 Stars</option>
+                  <option value="2">2 Stars</option>
+                  <option value="1">1 Star</option>
+                </select>
+
+              </div>
+
+              {/* Table */}
+              <div style={{ overflowX: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-input)', borderBottom: '1px solid var(--border-subtle)' }}>
+                      <th style={{ padding: '0.625rem 0.875rem', color: 'var(--text-secondary)', fontWeight: 600, width: '110px' }}>Rating</th>
+                      <th style={{ padding: '0.625rem 0.875rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Review Feedback</th>
+                      <th style={{ padding: '0.625rem 0.875rem', color: 'var(--text-secondary)', fontWeight: 600, width: '160px' }}>Product</th>
+                      <th style={{ padding: '0.625rem 0.875rem', color: 'var(--text-secondary)', fontWeight: 600, width: '120px' }}>Sentiment</th>
+                      <th style={{ padding: '0.625rem 0.875rem', color: 'var(--text-secondary)', fontWeight: 600, width: '85px', textAlign: 'right' }}>Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reviewsData.items.length > 0 ? (
+                      reviewsData.items.map((row) => (
+                        <tr key={row.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                          
+                          {/* Rating Stars */}
+                          <td style={{ padding: '0.75rem 0.875rem', whiteSpace: 'nowrap' }}>
+                            {row.rating ? (
+                              <div style={{ display: 'flex', gap: '2px', alignItems: 'center' }}>
+                                {[...Array(5)].map((_, i) => (
+                                  <Star 
+                                    key={i} 
+                                    size={12} 
+                                    fill={i < row.rating ? '#eab308' : 'none'} 
+                                    color={i < row.rating ? '#eab308' : '#3f3f46'} 
+                                  />
+                                ))}
+                              </div>
+                            ) : (
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>Unrated</span>
+                            )}
+                          </td>
+
+                          {/* Review Text */}
+                          <td style={{ padding: '0.75rem 0.875rem', color: 'var(--text-primary)', maxWidth: '420px' }}>
+                            <p style={{ margin: 0, lineHeight: 1.45 }}>
+                              "{row.text}"
+                            </p>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginTop: '0.25rem' }}>
+                              by {row.customer_name} • {row.created_at ? row.created_at.slice(0, 10) : ''}
+                            </span>
+                          </td>
+
+                          {/* Product Name */}
+                          <td style={{ padding: '0.75rem 0.875rem', color: 'var(--text-secondary)' }}>
+                            <span style={{ display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '140px' }} title={row.product_name}>
+                              {row.product_name || 'Food Product'}
+                            </span>
+                          </td>
+
+                          {/* Sentiment Result */}
+                          <td style={{ padding: '0.75rem 0.875rem' }}>
+                            <span className={`badge badge-${row.predicted_sentiment.toLowerCase()}`}>
+                              {row.predicted_sentiment}
+                            </span>
+                          </td>
+
+                          {/* Confidence */}
+                          <td style={{ padding: '0.75rem 0.875rem', textAlign: 'right', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            {(row.confidence * 100).toFixed(0)}%
+                          </td>
+
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                          {isLoadingReviews ? 'Loading reviews...' : 'No customer reviews match your search or filter.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {reviewsData.pages > 1 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  <span>Page {reviewsData.page} of {reviewsData.pages}</span>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button 
+                      className="btn btn-secondary" 
+                      style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+                      disabled={currentPage <= 1}
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    >
+                      <ChevronLeft size={14} />
+                      Previous
+                    </button>
+                    <button 
+                      className="btn btn-secondary" 
+                      style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+                      disabled={currentPage >= reviewsData.pages}
+                      onClick={() => setCurrentPage(p => Math.min(reviewsData.pages, p + 1))}
+                    >
+                      Next
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+            </section>
+          </>
         )}
 
       </main>
 
-      {/* Footer */}
+      {/* FOOTER */}
       <footer style={{ 
         borderTop: '1px solid var(--border-subtle)', 
         padding: '1.25rem 1.5rem', 
         fontSize: '0.75rem', 
         color: 'var(--text-muted)', 
         textAlign: 'center',
-        background: 'rgba(11, 15, 25, 0.9)'
+        background: 'var(--bg-app)'
       }}>
-        Fine-Food Review Sentiment Analyzer • OJT Machine Learning Project • Built with FastAPI & React
+        Fine-Food Insights • Natural Language Customer Feedback Intelligence
       </footer>
+
+      {/* ========================================================= */}
+      {/* MODAL 1: ADD NEW REVIEW FORM                               */}
+      {/* ========================================================= */}
+      {isAddModalOpen && (
+        <div className="modal-backdrop" onClick={() => !isSubmittingReview && setIsAddModalOpen(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            
+            <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Add Customer Review
+                </h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Review sentiment is predicted using the trained machine learning model and saved to the active dataset.
+                </p>
+              </div>
+              <button 
+                onClick={() => setIsAddModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                disabled={isSubmittingReview}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddReviewSubmit} style={{ padding: '1.5rem' }}>
+              
+              {/* Review Text (Required) */}
+              <div style={{ marginBottom: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.375rem' }}>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Customer Feedback <span style={{ color: 'var(--negative)' }}>*</span>
+                  </label>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    {newReviewText.length} chars
+                  </span>
+                </div>
+                <textarea 
+                  className="textarea-input"
+                  value={newReviewText}
+                  onChange={(e) => setNewReviewText(e.target.value)}
+                  placeholder="Enter the customer review text (e.g. 'The dark roast coffee was rich and smooth, highly recommend!')..."
+                  rows={4}
+                  required
+                />
+              </div>
+
+              {/* Star Rating (1-5 Stars) */}
+              <div style={{ marginBottom: '1.25rem' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '0.375rem' }}>
+                  Customer Rating (Optional)
+                </label>
+                <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setNewRating(star === newRating ? 0 : star)}
+                      style={{ 
+                        background: 'transparent', 
+                        border: 'none', 
+                        cursor: 'pointer',
+                        padding: '2px',
+                        display: 'flex'
+                      }}
+                    >
+                      <Star 
+                        size={22} 
+                        fill={star <= newRating ? '#eab308' : 'none'} 
+                        color={star <= newRating ? '#eab308' : '#52525b'} 
+                      />
+                    </button>
+                  ))}
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+                    {newRating > 0 ? `${newRating} of 5 Stars` : 'Click to select rating'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Customer Name & Product Name Inputs */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.5rem' }}>
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '0.375rem' }}>
+                    Customer Name (Optional)
+                  </label>
+                  <input 
+                    type="text" 
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    placeholder="e.g. Jane Doe"
+                    className="input-text"
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '0.375rem' }}>
+                    Product Name (Optional)
+                  </label>
+                  <input 
+                    type="text" 
+                    value={newProductName}
+                    onChange={(e) => setNewProductName(e.target.value)}
+                    placeholder="e.g. Organic Honey"
+                    className="input-text"
+                  />
+                </div>
+              </div>
+
+              {addReviewError && (
+                <div style={{ 
+                  marginBottom: '1rem', 
+                  padding: '0.625rem 0.875rem', 
+                  borderRadius: 'var(--radius-sm)', 
+                  background: 'var(--negative-bg)', 
+                  border: '1px solid var(--negative-border)', 
+                  color: 'var(--negative)', 
+                  fontSize: '0.8rem' 
+                }}>
+                  {addReviewError}
+                </div>
+              )}
+
+              {/* Form Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.625rem' }}>
+                <button 
+                  type="button" 
+                  className="btn btn-secondary"
+                  onClick={() => setIsAddModalOpen(false)}
+                  disabled={isSubmittingReview}
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit" 
+                  className="btn btn-primary"
+                  disabled={isSubmittingReview || !newReviewText.trim()}
+                >
+                  {isSubmittingReview ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      Analyzing & Saving...
+                    </>
+                  ) : (
+                    'Submit Review'
+                  )}
+                </button>
+              </div>
+
+            </form>
+
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL 2: UPLOAD CSV DATASET                                */}
+      {/* ========================================================= */}
+      {isUploadModalOpen && (
+        <div className="modal-backdrop" onClick={() => !isUploadingCsv && setIsUploadModalOpen(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            
+            <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Upload Customer Reviews (CSV)
+                </h3>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Batch-analyze sentiment for your customer review records.
+                </p>
+              </div>
+              <button 
+                onClick={() => setIsUploadModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                disabled={isUploadingCsv}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ padding: '1.5rem' }}>
+              
+              {/* File Picker Zone */}
+              <input 
+                type="file"
+                ref={fileInputRef}
+                accept=".csv"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    setCsvFile(e.target.files[0]);
+                    setUploadError(null);
+                  }
+                }}
+                style={{ display: 'none' }}
+              />
+
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                style={{ 
+                  border: '1px dashed var(--border-hover)', 
+                  borderRadius: 'var(--radius-md)', 
+                  padding: '2rem 1rem', 
+                  textAlign: 'center', 
+                  cursor: 'pointer',
+                  background: 'var(--bg-input)',
+                  marginBottom: '1.25rem',
+                  transition: 'border-color 0.15s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--text-secondary)'}
+                onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border-hover)'}
+              >
+                <div style={{ width: '36px', height: '36px', borderRadius: '8px', background: 'var(--bg-surface-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 0.75rem', color: 'var(--text-secondary)' }}>
+                  <Upload size={18} />
+                </div>
+                <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                  {csvFile ? csvFile.name : 'Click to choose a .csv file'}
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Auto-detects review text, rating, and customer name columns.
+                </p>
+              </div>
+
+              {/* Upload Mode Choice (Replace vs Append) */}
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', marginBottom: '0.5rem' }}>
+                  Dataset Action:
+                </label>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <label style={{ 
+                    display: 'flex', 
+                    alignItems: 'flex-start', 
+                    gap: '0.625rem', 
+                    padding: '0.625rem 0.75rem', 
+                    borderRadius: 'var(--radius-sm)', 
+                    background: uploadMode === 'replace' ? 'var(--bg-surface-elevated)' : 'transparent',
+                    border: '1px solid var(--border-subtle)',
+                    cursor: 'pointer' 
+                  }}>
+                    <input 
+                      type="radio" 
+                      name="uploadMode" 
+                      value="replace" 
+                      checked={uploadMode === 'replace'} 
+                      onChange={() => setUploadMode('replace')}
+                      style={{ marginTop: '3px' }}
+                    />
+                    <div>
+                      <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
+                        Replace active dataset
+                      </span>
+                      <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>
+                        Clear existing reviews and analyze this file as the active dataset.
+                      </span>
+                    </div>
+                  </label>
+
+                  <label style={{ 
+                    display: 'flex', 
+                    alignItems: 'flex-start', 
+                    gap: '0.625rem', 
+                    padding: '0.625rem 0.75rem', 
+                    borderRadius: 'var(--radius-sm)', 
+                    background: uploadMode === 'append' ? 'var(--bg-surface-elevated)' : 'transparent',
+                    border: '1px solid var(--border-subtle)',
+                    cursor: 'pointer' 
+                  }}>
+                    <input 
+                      type="radio" 
+                      name="uploadMode" 
+                      value="append" 
+                      checked={uploadMode === 'append'} 
+                      onChange={() => setUploadMode('append')}
+                      style={{ marginTop: '3px' }}
+                    />
+                    <div>
+                      <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block' }}>
+                        Add to active reviews
+                      </span>
+                      <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)' }}>
+                        Append the reviews in this file to currently saved records.
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {uploadError && (
+                <div style={{ 
+                  marginBottom: '1rem', 
+                  padding: '0.625rem 0.875rem', 
+                  borderRadius: 'var(--radius-sm)', 
+                  background: 'var(--negative-bg)', 
+                  border: '1px solid var(--negative-border)', 
+                  color: 'var(--negative)', 
+                  fontSize: '0.8rem' 
+                }}>
+                  {uploadError}
+                </div>
+              )}
+
+              {/* Modal Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <button 
+                  type="button" 
+                  className="btn btn-ghost"
+                  onClick={handleLoadDemoDataset}
+                  style={{ fontSize: '0.75rem' }}
+                >
+                  <Sparkles size={12} />
+                  Load Demo Reviews
+                </button>
+
+                <div style={{ display: 'flex', gap: '0.625rem' }}>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary"
+                    onClick={() => setIsUploadModalOpen(false)}
+                    disabled={isUploadingCsv}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-primary"
+                    onClick={handleCsvUploadSubmit}
+                    disabled={isUploadingCsv || !csvFile}
+                  >
+                    {isUploadingCsv ? (
+                      <>
+                        <RefreshCw size={14} className="animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      'Analyze CSV'
+                    )}
+                  </button>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );

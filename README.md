@@ -1,4 +1,4 @@
-# 🍽️ Amazon Fine-Food Review Sentiment Analyzer
+# 🍽️ Fine-Food Insights: Customer Review Sentiment Platform
 
 [![Open In Colab: EDA](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/K3nleyy/fine-food-sentiment-analyzer/blob/main/notebooks/01_data_exploration.ipynb)
 [![Open In Colab: Training](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/K3nleyy/fine-food-sentiment-analyzer/blob/main/notebooks/02_preprocessing_and_model_training.ipynb)
@@ -7,7 +7,7 @@
 ![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react)
 ![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-1.4%2B-F7931E?logo=scikit-learn)
 
-An end-to-end, production-ready Machine Learning system that classifies customer sentiments from the **Amazon Fine Food Reviews** dataset (568,454 reviews). The project encompasses rigorous exploratory data analysis, data quality sanitization, negation-preserving text normalization, time-aware chronological modeling, a high-throughput FastAPI inference engine, and a modern React real-time analytics dashboard.
+An end-to-end, commercial-grade Customer Sentiment Intelligence Platform designed for food and beverage brands. Built upon the **Amazon Fine Food Reviews** dataset (568,454 reviews), the system features negation-preserving text normalization, time-aware chronological modeling, persistent review storage, an asynchronous FastAPI backend, and an aesthetic, human-crafted React analytics dashboard inspired by Linear and Stripe.
 
 ---
 
@@ -267,49 +267,58 @@ Both notebooks are fully self-contained and run directly in Google Colab with Go
 
 ## 📡 API Reference
 
-### 1. Single Review Prediction
-- **`POST /predict`**
+### 1. Active Dataset Summary
+- **`GET /api/dataset/summary`**
+  - Returns real-time business metrics: total reviews, positive/neutral/negative counts & percentages, 1–5 star rating distributions, timeline trends, and key customer feedback themes.
+
+### 2. Manual Review Submission & Instant Inference
+- **`POST /api/reviews`**
 - **Request**:
   ```json
   {
-    "text": "The dark chocolate almonds arrived fresh, crunchy, and absolutely delicious!"
+    "text": "The dark chocolate almonds arrived fresh, crunchy, and absolutely delicious!",
+    "rating": 5,
+    "customer_name": "Jane Doe",
+    "product_name": "Organic Dark Chocolate Almonds"
   }
   ```
 - **Response**:
   ```json
   {
-    "text": "The dark chocolate almonds arrived fresh, crunchy, and absolutely delicious!",
-    "cleaned_text": "the dark chocolate almonds arrived fresh crunchy and absolutely delicious best purchase ever",
-    "sentiment": "Positive",
-    "confidence": 0.9842,
-    "probabilities": {
-      "Negative": 0.0051,
-      "Neutral": 0.0107,
-      "Positive": 0.9842
-    }
+    "review": {
+      "id": "rev_1700000000000",
+      "text": "The dark chocolate almonds arrived fresh, crunchy, and absolutely delicious!",
+      "rating": 5,
+      "customer_name": "Jane Doe",
+      "product_name": "Organic Dark Chocolate Almonds",
+      "predicted_sentiment": "Positive",
+      "confidence": 0.9812,
+      "probabilities": {
+        "Negative": 0.0051,
+        "Neutral": 0.0137,
+        "Positive": 0.9812
+      },
+      "created_at": "2026-11-19 14:30:00"
+    },
+    "summary": { "has_data": true, "total_reviews": 1, ... }
   }
   ```
 
-### 2. Batch Review Prediction
-- **`POST /predict-batch`**
-- **Request**:
-  ```json
-  {
-    "reviews": [
-      "Loved this snack, tastes great!",
-      "Arrived stale and torn open. Awful.",
-      "It was average, nothing special."
-    ]
-  }
-  ```
+### 3. Review Explorer Listing
+- **`GET /api/reviews?page=1&limit=15&search=almonds&sentiment=Positive&rating=5`**
+  - Returns paginated, searchable, and filtered review records from the persistent store.
 
-### 3. CSV Upload & Analytics
-- **`POST /upload-csv`** (`multipart/form-data`)
-  - Auto-detects text column, executes batch inference, and returns aggregated sentiment distribution metrics with preview rows.
+### 4. CSV Dataset Upload (Replace or Append)
+- **`POST /api/upload-csv`** (`multipart/form-data`)
+  - Uploads customer review CSV, auto-detects review text, runs batch sentiment analysis, and updates active dataset (`mode`: `"replace"` or `"append"`).
 
-### 4. CSV Export with Appended Predictions
-- **`POST /export-csv`** (`multipart/form-data`)
-  - Streams back the uploaded CSV file with appended `Predicted_Sentiment`, `Confidence`, and probability breakdown columns.
+### 5. Dataset Export
+- **`GET /api/dataset/export`**
+  - Streams back the complete active dataset as a CSV file with predicted sentiments and confidence scores.
+
+### 6. Stateless Ad-Hoc Prediction
+- **`POST /predict`**
+  - Analyzes a single review text without saving to the persistent store.
 
 ---
 

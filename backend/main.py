@@ -1,59 +1,74 @@
 import os
 import io
+from datetime import datetime, timezone
 import pandas as pd
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.predictor import predictor, LABEL_MAP
+from backend.dataset_store import dataset_store
 from backend.schemas import (
     ReviewRequest,
     ReviewResponse,
     BatchReviewRequest,
     BatchReviewResponse,
+    SubmitReviewRequest,
+    SubmitReviewResponse,
+    DatasetSummaryResponse,
+    ReviewsListResponse,
+    ReviewItem,
     CsvUploadResponse,
-    CsvReviewItem,
     HealthResponse,
     SentimentDistribution,
     SentimentPercentages,
-    Probabilities
+    Probabilities,
+    FeedbackTheme,
+    TimelineItem
 )
 
 app = FastAPI(
-    title="Fine-Food Review Sentiment Analyzer API",
+    title="Fine-Food Insights API",
     description="""
-    Production-grade Machine Learning API for classifying Amazon Fine Food customer reviews.
+    Commercial Customer Feedback Sentiment Analysis Platform.
     
     ### Capabilities:
-    * **Manual Review Prediction**: Classifies single user-inputted review with confidence scores.
-    * **Batch Prediction**: High-throughput vectorized classification for multiple reviews.
-    * **CSV Upload & Analysis**: Upload dataset CSV, auto-detect text column, and generate aggregated distribution analytics.
-    * **CSV Export**: Download analyzed CSV with appended sentiment predictions and probability columns.
+    * **Customer Feedback Analytics**: Live aggregated sentiment, rating distributions, and trend analysis.
+    * **Review Submission**: Real-time review intake with instant model inference and persistent CSV storage.
+    * **CSV Dataset Management**: Upload and batch-analyze customer reviews with 'replace' or 'append' workflows.
+    * **Data Export**: Export analyzed review datasets with sentiment scores and confidence values.
     """,
-    version="1.0.0"
+    version="2.0.0"
 )
 
-# Enable Cross-Origin Resource Sharing (CORS) for React frontend integration
+# Enable CORS for React frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins in development
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# -------------------------------------------------------------
+# System & Health Endpoints
+# -------------------------------------------------------------
+
 @app.get("/", tags=["General"])
 def root():
     return {
-        "project": "Fine-Food Review Sentiment Analyzer",
+        "platform": "Fine-Food Insights",
+        "description": "Understand your customer feedback.",
         "documentation": "/docs",
         "health_check": "/health",
         "endpoints": {
-            "POST /predict": "Predict sentiment for a single review",
-            "POST /predict-batch": "Predict sentiment for a list of reviews",
-            "POST /upload-csv": "Upload CSV file for sentiment analytics",
-            "POST /export-csv": "Download processed CSV with predicted sentiment"
+            "GET /api/dataset/summary": "Fetch aggregated sentiment metrics & themes",
+            "GET /api/reviews": "Fetch paginated and filtered customer reviews",
+            "POST /api/reviews": "Submit a new customer review with instant inference",
+            "POST /api/upload-csv": "Upload and batch-analyze customer review CSV",
+            "GET /api/dataset/export": "Download active analyzed review dataset",
+            "POST /predict": "Ad-hoc stateless sentiment prediction"
         }
     }
 
@@ -62,7 +77,7 @@ def health_check():
     if not predictor.is_loaded:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model artifacts could not be located or loaded."
+            detail="Sentiment analysis model is not ready."
         )
     return HealthResponse(
         status="healthy",
@@ -72,101 +87,153 @@ def health_check():
         classes=list(LABEL_MAP.values())
     )
 
-@app.post("/predict", response_model=ReviewResponse, tags=["Inference"])
-def predict_sentiment(request: ReviewRequest):
+# -------------------------------------------------------------
+# Active Dataset & Customer Analytics Endpoints
+# -------------------------------------------------------------
+
+@app.get("/api/dataset/summary", response_model=DatasetSummaryResponse, tags=["Analytics"])
+def get_dataset_summary():
     """
-    Predict sentiment (Positive, Neutral, Negative) for a single customer review.
+    Returns high-level business analytics for the active review dataset:
+    total count, sentiment counts/percentages, rating distributions, 
+    sentiment timeline trends, and key feedback themes.
+    """
+    data = dataset_store.get_summary()
+    return DatasetSummaryResponse(
+        has_data=data["has_data"],
+        total_reviews=data["total_reviews"],
+        sentiment_distribution=SentimentDistribution(**data["sentiment_distribution"]),
+        sentiment_percentages=SentimentPercentages(**data["sentiment_percentages"]),
+        rating_distribution=data["rating_distribution"],
+        timeline=[TimelineItem(**item) for item in data["timeline"]],
+        positive_themes=[FeedbackTheme(**item) for item in data["positive_themes"]],
+        negative_themes=[FeedbackTheme(**item) for item in data["negative_themes"]],
+        last_updated=data["last_updated"]
+    )
+
+@app.get("/api/reviews", response_model=ReviewsListResponse, tags=["Reviews"])
+def list_reviews(
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    search: Optional[str] = Query("", description="Keyword search in review text, customer, or product"),
+    sentiment: Optional[str] = Query("ALL", description="Filter by sentiment: ALL, Positive, Neutral, Negative"),
+    rating: Optional[str] = Query("ALL", description="Filter by rating: ALL, 1, 2, 3, 4, 5")
+):
+    """
+    Returns paginated, searchable, and filtered customer reviews from the active dataset.
+    """
+    out = dataset_store.get_reviews(
+        page=page, 
+        limit=limit, 
+        search=search, 
+        sentiment=sentiment, 
+        rating=rating
+    )
+    items = [
+        ReviewItem(
+            id=item["id"],
+            text=item["text"],
+            rating=item["rating"],
+            customer_name=item["customer_name"],
+            product_name=item["product_name"],
+            predicted_sentiment=item["predicted_sentiment"],
+            confidence=item["confidence"],
+            probabilities=Probabilities(**item["probabilities"]),
+            created_at=item["created_at"]
+        )
+        for item in out["items"]
+    ]
+    return ReviewsListResponse(
+        total=out["total"],
+        page=out["page"],
+        pages=out["pages"],
+        items=items
+    )
+
+@app.post("/api/reviews", response_model=SubmitReviewResponse, tags=["Reviews"])
+def submit_new_review(request: SubmitReviewRequest):
+    """
+    Submits a new customer review:
+    1. Validates submitted review information.
+    2. Runs sentiment inference with the trained TF-IDF & Logistic Regression model.
+    3. Saves review, rating, and predicted sentiment to the persistent dataset CSV.
+    4. Automatically recalculates and returns the updated dashboard metrics.
     """
     if not predictor.is_loaded:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model is not ready. Please verify artifacts in model/ directory."
+            detail="Model is not ready for prediction."
         )
 
     text = request.text.strip()
     if not text:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Review text cannot be empty or purely whitespace."
+            detail="Review feedback text is required."
         )
 
     try:
-        result = predictor.predict_single(text)
-        return ReviewResponse(
-            text=result["text"],
-            cleaned_text=result["cleaned_text"],
-            sentiment=result["sentiment"],
-            confidence=result["confidence"],
-            probabilities=Probabilities(**result["probabilities"])
+        new_row = dataset_store.add_single_review(
+            text=text,
+            rating=request.rating,
+            customer_name=request.customer_name,
+            product_name=request.product_name
+        )
+
+        review_item = ReviewItem(
+            id=new_row["id"],
+            text=new_row["text"],
+            rating=int(new_row["rating"]) if new_row["rating"] else None,
+            customer_name=new_row["customer_name"],
+            product_name=new_row["product_name"],
+            predicted_sentiment=new_row["predicted_sentiment"],
+            confidence=new_row["confidence"],
+            probabilities=Probabilities(
+                Positive=new_row["prob_positive"],
+                Neutral=new_row["prob_neutral"],
+                Negative=new_row["prob_negative"]
+            ),
+            created_at=new_row["created_at"]
+        )
+
+        summary_data = dataset_store.get_summary()
+        summary_resp = DatasetSummaryResponse(
+            has_data=summary_data["has_data"],
+            total_reviews=summary_data["total_reviews"],
+            sentiment_distribution=SentimentDistribution(**summary_data["sentiment_distribution"]),
+            sentiment_percentages=SentimentPercentages(**summary_data["sentiment_percentages"]),
+            rating_distribution=summary_data["rating_distribution"],
+            timeline=[TimelineItem(**item) for item in summary_data["timeline"]],
+            positive_themes=[FeedbackTheme(**item) for item in summary_data["positive_themes"]],
+            negative_themes=[FeedbackTheme(**item) for item in summary_data["negative_themes"]],
+            last_updated=summary_data["last_updated"]
+        )
+
+        return SubmitReviewResponse(
+            review=review_item,
+            summary=summary_resp
         )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Inference error: {str(e)}"
+            detail=f"Failed to submit and store review: {str(e)}"
         )
 
-@app.post("/predict-batch", response_model=BatchReviewResponse, tags=["Inference"])
-def predict_batch_sentiment(request: BatchReviewRequest):
-    """
-    Predict sentiment for a batch of customer reviews.
-    """
-    if not predictor.is_loaded:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model is not ready."
-        )
+# -------------------------------------------------------------
+# CSV Dataset Upload & Management
+# -------------------------------------------------------------
 
-    if not request.reviews:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Reviews list cannot be empty."
-        )
-
-    try:
-        batch_out = predictor.predict_batch(request.reviews)
-        results = [
-            ReviewResponse(
-                text=r["text"],
-                cleaned_text=r["cleaned_text"],
-                sentiment=r["sentiment"],
-                confidence=r["confidence"],
-                probabilities=Probabilities(**r["probabilities"])
-            )
-            for r in batch_out["results"]
-        ]
-        return BatchReviewResponse(
-            total_reviews=batch_out["total_reviews"],
-            sentiment_distribution=SentimentDistribution(**batch_out["sentiment_distribution"]),
-            sentiment_percentages=SentimentPercentages(**batch_out["sentiment_percentages"]),
-            results=results
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Batch inference failed: {str(e)}"
-        )
-
-def _detect_text_column(df: pd.DataFrame) -> str:
+@app.post("/api/upload-csv", response_model=CsvUploadResponse, tags=["CSV Analytics"])
+async def upload_csv_to_dataset(
+    file: UploadFile = File(...),
+    mode: str = Form("replace")  # 'replace' or 'append'
+):
     """
-    Auto-detect the most likely text column containing customer reviews.
-    """
-    candidates = ['Text', 'text', 'Review', 'review', 'Reviews', 'reviews', 'Comment', 'comment', 'Summary', 'summary', 'body']
-    for candidate in candidates:
-        if candidate in df.columns:
-            return candidate
-    
-    # Fallback to the first string/object column
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            return col
-            
-    return None
-
-@app.post("/upload-csv", response_model=CsvUploadResponse, tags=["CSV Analytics"])
-async def upload_csv_analysis(file: UploadFile = File(...)):
-    """
-    Upload a CSV file containing reviews. Auto-detects the review text column,
-    classifies all reviews, and returns aggregate sentiment distribution analytics.
+    Upload a customer review CSV:
+    - Auto-detects review text, rating, customer name, and date columns.
+    - Classifies reviews using the trained sentiment model.
+    - Persistently stores data into active_reviews.csv (mode: 'replace' or 'append').
+    - Returns updated dashboard metrics and preview rows.
     """
     if not predictor.is_loaded:
         raise HTTPException(
@@ -180,9 +247,12 @@ async def upload_csv_analysis(file: UploadFile = File(...)):
             detail="Invalid file format. Please upload a valid .csv file."
         )
 
+    mode = mode.lower().strip()
+    if mode not in ["replace", "append"]:
+        mode = "replace"
+
     try:
         contents = await file.read()
-        # Parse CSV safely with on_bad_lines fallback
         try:
             df = pd.read_csv(io.BytesIO(contents))
         except Exception:
@@ -190,7 +260,7 @@ async def upload_csv_analysis(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to read CSV: {str(e)}"
+            detail=f"Failed to parse CSV: {str(e)}"
         )
 
     if df.empty:
@@ -199,85 +269,183 @@ async def upload_csv_analysis(file: UploadFile = File(...)):
             detail="The uploaded CSV file is empty."
         )
 
-    text_col = _detect_text_column(df)
-    if not text_col:
+    try:
+        imported_count, text_col = dataset_store.import_dataframe(df, mode=mode)
+    except ValueError as ve:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not automatically detect review text column. Available columns: {list(df.columns)}"
+            detail=str(ve)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Batch processing error: {str(e)}"
         )
 
-    # Clean missing values in the text column
-    raw_texts = df[text_col].fillna("").astype(str).tolist()
-
-    # Limit to maximum 10,000 rows per single CSV upload request for latency protection
-    max_rows = 10000
-    is_truncated = False
-    if len(raw_texts) > max_rows:
-        raw_texts = raw_texts[:max_rows]
-        is_truncated = True
-
-    batch_out = predictor.predict_batch(raw_texts)
-
-    # Build sample preview (first 100 rows for frontend table rendering)
-    preview_limit = min(100, len(batch_out["results"]))
-    results_sample = []
-    id_col = 'Id' if 'Id' in df.columns else ('id' if 'id' in df.columns else None)
-
-    for i in range(preview_limit):
-        item = batch_out["results"][i]
-        row_id = df.iloc[i][id_col] if id_col else i + 1
-        results_sample.append(CsvReviewItem(
-            id=str(row_id),
-            original_text=item["text"][:300] + ("..." if len(item["text"]) > 300 else ""),
-            cleaned_text=item["cleaned_text"][:200],
-            predicted_sentiment=item["sentiment"],
-            confidence=item["confidence"],
-            probabilities=Probabilities(**item["probabilities"])
-        ))
-
-    return CsvUploadResponse(
-        filename=file.filename + (" (Truncated to first 10,000 rows)" if is_truncated else ""),
-        total_reviews=batch_out["total_reviews"],
-        text_column_detected=text_col,
-        sentiment_distribution=SentimentDistribution(**batch_out["sentiment_distribution"]),
-        sentiment_percentages=SentimentPercentages(**batch_out["sentiment_percentages"]),
-        results_sample=results_sample,
-        download_available=True
+    summary_data = dataset_store.get_summary()
+    summary_resp = DatasetSummaryResponse(
+        has_data=summary_data["has_data"],
+        total_reviews=summary_data["total_reviews"],
+        sentiment_distribution=SentimentDistribution(**summary_data["sentiment_distribution"]),
+        sentiment_percentages=SentimentPercentages(**summary_data["sentiment_percentages"]),
+        rating_distribution=summary_data["rating_distribution"],
+        timeline=[TimelineItem(**item) for item in summary_data["timeline"]],
+        positive_themes=[FeedbackTheme(**item) for item in summary_data["positive_themes"]],
+        negative_themes=[FeedbackTheme(**item) for item in summary_data["negative_themes"]],
+        last_updated=summary_data["last_updated"]
     )
 
-@app.post("/export-csv", tags=["CSV Analytics"])
-async def export_analyzed_csv(file: UploadFile = File(...)):
+    # Preview sample
+    preview_reviews = dataset_store.get_reviews(page=1, limit=10)
+    sample_items = [
+        ReviewItem(
+            id=item["id"],
+            text=item["text"],
+            rating=item["rating"],
+            customer_name=item["customer_name"],
+            product_name=item["product_name"],
+            predicted_sentiment=item["predicted_sentiment"],
+            confidence=item["confidence"],
+            probabilities=Probabilities(**item["probabilities"]),
+            created_at=item["created_at"]
+        )
+        for item in preview_reviews["items"]
+    ]
+
+    return CsvUploadResponse(
+        filename=file.filename,
+        total_reviews=imported_count,
+        text_column_detected=text_col,
+        mode=mode,
+        sentiment_distribution=SentimentDistribution(**summary_data["sentiment_distribution"]),
+        sentiment_percentages=SentimentPercentages(**summary_data["sentiment_percentages"]),
+        results_sample=sample_items,
+        summary=summary_resp
+    )
+
+@app.post("/api/dataset/sample", response_model=DatasetSummaryResponse, tags=["Analytics"])
+def load_demo_sample_dataset():
     """
-    Upload CSV file, run sentiment inference, and download the full CSV
-    with Predicted_Sentiment, Confidence, and Probabilities appended.
+    Populates the dashboard with a curated set of 25 realistic fine-food customer reviews
+    spanning 1-star to 5-star experiences for instant demo exploration.
     """
+    dataset_store.load_sample_dataset()
+    return get_dataset_summary()
+
+@app.post("/api/dataset/clear", response_model=DatasetSummaryResponse, tags=["Analytics"])
+def clear_active_dataset():
+    """
+    Clears the active review dataset, resetting the dashboard to its clean initial state.
+    """
+    dataset_store.clear()
+    return get_dataset_summary()
+
+@app.get("/api/dataset/export", tags=["Analytics"])
+def export_active_dataset():
+    """
+    Downloads the full active customer review dataset with predicted sentiments and confidence.
+    """
+    df = dataset_store.load_df()
+    if df.empty:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Active dataset has no records to export."
+        )
+
+    stream = io.StringIO()
+    df.to_csv(stream, index=False)
+    stream.seek(0)
+
+    filename = f"fine_food_insights_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        iter([stream.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+# -------------------------------------------------------------
+# Backward-Compatible Endpoints
+# -------------------------------------------------------------
+
+@app.post("/predict", response_model=ReviewResponse, tags=["Inference"])
+def predict_sentiment(request: ReviewRequest):
+    """Ad-hoc single review prediction without saving."""
     if not predictor.is_loaded:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Model is not ready."
         )
-
-    if not file.filename.endswith(".csv"):
+    text = request.text.strip()
+    if not text:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be a .csv format."
+            detail="Review text cannot be empty."
         )
+    result = predictor.predict_single(text)
+    return ReviewResponse(
+        text=result["text"],
+        cleaned_text=result["cleaned_text"],
+        sentiment=result["sentiment"],
+        confidence=result["confidence"],
+        probabilities=Probabilities(**result["probabilities"])
+    )
 
+@app.post("/predict-batch", response_model=BatchReviewResponse, tags=["Inference"])
+def predict_batch_sentiment(request: BatchReviewRequest):
+    """Ad-hoc batch prediction without saving."""
+    if not predictor.is_loaded:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model is not ready."
+        )
+    if not request.reviews:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reviews list cannot be empty."
+        )
+    batch_out = predictor.predict_batch(request.reviews)
+    results = [
+        ReviewResponse(
+            text=r["text"],
+            cleaned_text=r["cleaned_text"],
+            sentiment=r["sentiment"],
+            confidence=r["confidence"],
+            probabilities=Probabilities(**r["probabilities"])
+        )
+        for r in batch_out["results"]
+    ]
+    return BatchReviewResponse(
+        total_reviews=batch_out["total_reviews"],
+        sentiment_distribution=SentimentDistribution(**batch_out["sentiment_distribution"]),
+        sentiment_percentages=SentimentPercentages(**batch_out["sentiment_percentages"]),
+        results=results
+    )
+
+@app.post("/export-csv", tags=["CSV Analytics"])
+async def export_analyzed_csv(file: UploadFile = File(...)):
+    """Upload CSV file, run sentiment inference, and download the full CSV with predictions appended."""
+    if not predictor.is_loaded:
+        raise HTTPException(status_code=503, detail="Model is not ready.")
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv format.")
     try:
         contents = await file.read()
         df = pd.read_csv(io.BytesIO(contents))
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not parse CSV: {str(e)}"
-        )
+        raise HTTPException(status_code=400, detail=f"Could not parse CSV: {str(e)}")
 
-    text_col = _detect_text_column(df)
+    text_col = None
+    for candidate in ['Text', 'text', 'Review', 'review', 'Reviews', 'reviews', 'Comment', 'comment', 'Summary']:
+        if candidate in df.columns:
+            text_col = candidate
+            break
     if not text_col:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not detect review text column."
-        )
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                text_col = col
+                break
+    if not text_col:
+        raise HTTPException(status_code=400, detail="Could not detect review text column.")
 
     raw_texts = df[text_col].fillna("").astype(str).tolist()
     batch_out = predictor.predict_batch(raw_texts)
@@ -291,7 +459,6 @@ async def export_analyzed_csv(file: UploadFile = File(...)):
     stream = io.StringIO()
     df.to_csv(stream, index=False)
     stream.seek(0)
-
     export_filename = f"analyzed_{file.filename}"
     return StreamingResponse(
         iter([stream.getvalue()]),
