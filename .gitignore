@@ -14,14 +14,18 @@ env/
 # macOS
 .DS_Store
 
-# Environment variables
+# Environment variables — keep .env.example committed as a template
 .env
+.env.local
+.env.production.local
+frontend/.env.local
 
 # Node
 node_modules/
 frontend/node_modules/
 frontend/dist/
 
-# Model files
+# Model files — keep .pkl excluded, but commit .joblib (needed for deployment)
 *.pkl
-*.joblib
+# *.joblib files ARE committed intentionally (tfidf_vectorizer + logistic_regression_model)
+# They are small (<2 MB total) and required by the FastAPI backend on Render

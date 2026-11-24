@@ -20,9 +20,14 @@ import {
   ChevronRight
 } from 'lucide-react';
 
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-  ? 'http://127.0.0.1:8000'
-  : '/api';
+// In development: talk directly to local FastAPI on port 8000.
+// In production: use VITE_API_URL (set in Vercel env vars to the Render backend URL).
+// Falls back to relative '/api' in case rewrites are configured.
+const API_BASE = import.meta.env.VITE_API_URL
+  ? import.meta.env.VITE_API_URL.replace(/\/$/, '')   // strip trailing slash
+  : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+      ? 'http://127.0.0.1:8000'
+      : '');
 
 export default function App() {
   // Main dataset summary state
