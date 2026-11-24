@@ -1,20 +1,20 @@
 services:
-  # ── FastAPI Backend ──────────────────────────────────────────────────────────
+  # ── Fine-Food Insights: FastAPI Backend ──────────────────────────────────────
   - type: web
     name: fine-food-insights-api
     runtime: python
     plan: free
 
-    # Build: install Python dependencies from backend/requirements.txt
+    # Render sets $PORT automatically; we bind uvicorn to it
     buildCommand: pip install -r backend/requirements.txt
-
-    # Start: bind to the PORT Render injects automatically
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
 
-    # Health check path (Render pings this to know the service is ready)
+    # Render pings this route to confirm the service is live
     healthCheckPath: /health
 
     envVars:
-      # Keep Python 3.11 for compatibility with scikit-learn 1.4+
       - key: PYTHON_VERSION
         value: 3.11.4
+      # DATA_DIR: writable directory for active_reviews.csv (ephemeral on free tier)
+      - key: DATA_DIR
+        value: data
