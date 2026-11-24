@@ -7,7 +7,7 @@ services:
 
     # Render sets $PORT automatically; we bind uvicorn to it
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
 
     # Render pings this route to confirm the service is live
     healthCheckPath: /health
